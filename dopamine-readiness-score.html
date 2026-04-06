@@ -399,7 +399,7 @@ body{font-family:'Outfit',sans-serif;background:var(--white);color:var(--black);
       <div class="form-field"><label>Your Name <span>*</span></label><input type="text" class="form-input" id="cName" placeholder="Ahmed Al Rashidi"></div>
       <div class="form-field"><label>Email Address <span>*</span></label><input type="email" class="form-input" id="cEmail" placeholder="ahmed@company.com"></div>
       <div class="form-field"><label>Business Name <span>*</span></label><input type="text" class="form-input" id="cBiz" placeholder="Gulf Health Solutions LLC"></div>
-      <div class="form-field"><label>Company Website / Domain</label><input type="text" class="form-input" id="cDomain" placeholder="e.g. gulfhealth.ae" autocomplete="off"></div>
+      <div class="form-field"><label>Company Website / Domain <span>*</span></label><input type="text" class="form-input" id="cDomain" placeholder="e.g. gulfhealth.ae" autocomplete="off"></div>
       <div class="form-field"><label>Sector <span>*</span></label>
         <select class="form-input" id="cSector">
           <option value="">Select your sector</option>
@@ -527,8 +527,9 @@ async function submitForm(){
   const email=document.getElementById('cEmail').value.trim();
   const biz=document.getElementById('cBiz').value.trim();
   const sector=document.getElementById('cSector').value;
+  const domain=document.getElementById('cDomain').value.trim();
   const errEl=document.getElementById('err6');
-  if(!name||!email||!biz||!sector){errEl.style.display='block';setTimeout(()=>errEl.style.display='none',3000);return;}
+  if(!name||!email||!biz||!sector||!domain){errEl.textContent='Please fill in your name, email, business name, sector, and company domain.';errEl.style.display='block';setTimeout(()=>errEl.style.display='none',4000);return;}
   document.getElementById('submitBtn').disabled=true;
   const loading=document.getElementById('loadingScreen');
   loading.classList.add('active');
@@ -633,6 +634,17 @@ function renderResults(data,name,biz,sector){
 }
 
 // ─── ATTIO PUSH ──────────────────────────────────────────────────────────────
+function revenueRangeToMidpointUsd(range) {
+  const map = {
+    'under $1m':    500000,
+    '$1m – $5m':    3000000,
+    '$5m – $15m':   10000000,
+    '$15m – $50m':  32500000,
+    '$50m+':        75000000
+  };
+  return map[(range||'').toLowerCase().trim()] || null;
+}
+
 async function pushReadinessToAttio(scoreData, contactName, companyName, sector) {
   const RELAY = 'https://dopamine-relay.onrender.com/submit-lead';
   const domain = (document.getElementById('cDomain').value || '').trim()
@@ -645,6 +657,9 @@ async function pushReadinessToAttio(scoreData, contactName, companyName, sector)
     return;
   }
 
+  const revenueRange = (document.getElementById('cRevenue').value || '').trim();
+  const revenueUsd   = revenueRangeToMidpointUsd(revenueRange);
+
   const payload = {
     companyName,
     domain,
@@ -656,6 +671,7 @@ async function pushReadinessToAttio(scoreData, contactName, companyName, sector)
     maScore: scoreData.overallScore,
     scoreBand: scoreData.scoreBand
   };
+  if (revenueUsd != null) payload.revenueUsd = revenueUsd;
 
   try {
     const r = await fetch(RELAY, {
