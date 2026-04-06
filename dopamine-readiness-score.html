@@ -634,6 +634,63 @@ function renderResults(data,name,biz,sector){
 }
 
 // ─── ATTIO PUSH ──────────────────────────────────────────────────────────────
+function buildAdvisoryContent(ans) {
+  const v = q => (ans[q] !== undefined ? Number(ans[q]) : null);
+  const referrals = [];
+  const notes     = [];
+
+  // Q1: No accountant-prepared financials
+  if (v('q1') !== null && v('q1') <= 1) {
+    referrals.push('Audit / accounting partner (UAE Freezone Service Providers list)');
+    notes.push('Financial statements not accountant-prepared. Refer for audit/accounting before buyer process.');
+  }
+
+  // Q2: Customer concentration
+  if (v('q2') === 0) {
+    notes.push('DEAL RISK: Single customer exceeds 50% of revenue. High buyer concern — do not refer until concentration is addressed.');
+  } else if (v('q2') === 1) {
+    notes.push('Customer concentration 30-50%. Moderate risk — confirm diversification plan on first call.');
+  }
+
+  // Q3: Outstanding tax/legal issues
+  if (v('q3') === 0) {
+    referrals.push('Legal / compliance partner (significant open tax or legal issues)');
+    notes.push('Significant tax or legal issues outstanding. Legal referral required before proceeding.');
+  } else if (v('q3') === 1) {
+    notes.push('Minor tax or legal issues in progress. Confirm resolution status on first call.');
+  }
+
+  // Q4: Owner-dependent business
+  if (v('q4') !== null && v('q4') <= 1) {
+    notes.push('Founder dependency risk: business is heavily reliant on the owner. Key buyer concern — address on readiness call.');
+  }
+
+  // Q6: No documented processes
+  if (v('q6') === 0) {
+    notes.push('No documented processes or SOPs. Recommend operational preparation before listing.');
+  }
+
+  // Q10: Regulatory / licensing gaps
+  if (v('q10') === 0) {
+    referrals.push('Legal / licensing partner (registration or licence gaps identified)');
+    notes.push('Regulatory standing incomplete. Must resolve before any buyer introductions.');
+  }
+
+  // Q12: IP or brand in personal name
+  if (v('q12') === 0) {
+    referrals.push('IP / legal partner (key assets or brand held in personal name)');
+    notes.push('IP and/or brand assets in personal name. Must be formally transferred to company before sale process.');
+  } else if (v('q12') === 2) {
+    referrals.push('IP / legal partner (some assets pending formal transfer to company)');
+    notes.push('Some IP/brand assets require formal transfer to company entity.');
+  }
+
+  return {
+    referral:     referrals.length ? referrals.join('; ') : null,
+    advisoryNote: notes.length     ? notes.join(' | ')    : null
+  };
+}
+
 function revenueRangeToMidpointUsd(range) {
   const map = {
     'under $1m':    500000,
@@ -659,17 +716,23 @@ async function pushReadinessToAttio(scoreData, contactName, companyName, sector)
 
   const revenueRange = (document.getElementById('cRevenue').value || '').trim();
   const revenueUsd   = revenueRangeToMidpointUsd(revenueRange);
+  const advisory     = buildAdvisoryContent(answers);
 
   const payload = {
     companyName,
     domain,
     sector,
-    geo: country,
+    geo:          country,
     contactName,
     contactEmail: email,
-    leadSource: 'M&A Readiness Tool',
-    maScore: scoreData.overallScore,
-    scoreBand: scoreData.scoreBand
+    leadSource:   'M&A Readiness Tool',
+    maScore:      scoreData.overallScore,
+    scoreBand:    scoreData.scoreBand,
+    revenueRange,
+    answers,
+    // Rule-based values sent as fallback if Claude advisory call fails server-side
+    recommendedReferral:  advisory.referral,
+    internalAdvisoryNote: advisory.advisoryNote
   };
   if (revenueUsd != null) payload.revenueUsd = revenueUsd;
 
