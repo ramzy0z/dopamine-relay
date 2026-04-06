@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/valuation", "destination": "/dopamine-valuation.html" },
+    { "source": "/readiness", "destination": "/dopamine-readiness-score.html" }
+  ]
+}
