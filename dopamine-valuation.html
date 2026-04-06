@@ -2467,7 +2467,7 @@ function FundraiseReadiness({gate,cfg}){
 //   2. Add to Lead Magnet Inbound list
 //   3. Add to Seller Database list (with revenue + EBITDA in AED, contact details)
 // USD -> AED conversion at 3.6725 peg happens server-side.
-async function pushLeadToAttio(gateData,cfgData){
+async function pushLeadToAttio(gateData,cfgData,blendedData){
   const SUBMIT_URL=RELAY_BASE+"/submit-lead";
 
   if(!gateData.domain||!gateData.domain.trim()){
@@ -2480,12 +2480,16 @@ async function pushLeadToAttio(gateData,cfgData){
     domain:      gateData.domain.trim(),
     description: gateData.description||"",
     sector:      gateData.sector||"",
-    geo:         gateData.geo||"",
-    contactName: gateData.name||"",
-    contactEmail:gateData.email||"",
-    revenueUsd:  cfgData.revenue||0,
-    ebitdaUsd:   cfgData.ebitda||0,
-    leadSource:  "Valuation Tool"
+    geo:              gateData.geo||"",
+    contactName:      gateData.name||"",
+    contactEmail:     gateData.email||"",
+    revenueUsd:       cfgData.revenue||0,
+    ebitdaUsd:        cfgData.ebitda||0,
+    ownerSalaryUsd:   gateData.ownerSalary||0,
+    leadSource:       "Valuation Tool",
+    valuationLowUsd:  blendedData?blendedData.low:undefined,
+    valuationMidUsd:  blendedData?blendedData.mid:undefined,
+    valuationHighUsd: blendedData?blendedData.high:undefined
   };
 
   console.group("[Attio] Submitting lead →",payload.companyName,"|",payload.domain);
@@ -2669,11 +2673,32 @@ function App(){
     const cfgData={revenue:data.revenue,ebitda:adjEBITDA};
     setCfg(cfgData);
     setGated(true);
-    // Silent CRM capture
-    pushLeadToAttio(data,cfgData);
   };
 
   const upd=useCallback(u=>setVd(p=>({...p,...u})),[]);
+
+  // Push to Attio once results are ready — blended valuation is fully computed by then
+  const attioPushedRef=useRef(false);
+  useEffect(()=>{
+    if(!resultsReady||!gate||attioPushedRef.current)return;
+    attioPushedRef.current=true;
+    const rev=cfg.revenue||0;const ebitda=cfg.ebitda||0;const hasEb=ebitda>0;
+    const clamp=r=>{const s=[r.low,r.mid,r.high].sort((a,b)=>a-b);return{low:s[0],mid:s[1],high:s[2]};};
+    const rows=[];
+    if(vd.dcfEquity>0)rows.push(clamp({low:vd.dcfEquity*0.75,mid:vd.dcfEquity,high:vd.dcfEquity*1.25}));
+    if(vd.trRevMid>0&&rev>0)rows.push(clamp({low:(vd.trRevLow||0)*rev,mid:vd.trRevMid*rev,high:(vd.trRevHigh||0)*rev}));
+    if(hasEb&&vd.trEbMid>0)rows.push(clamp({low:(vd.trEbLow||0)*ebitda,mid:vd.trEbMid*ebitda,high:(vd.trEbHigh||0)*ebitda}));
+    if(vd.txRevMid>0&&rev>0)rows.push(clamp({low:(vd.txRevLow||0)*rev,mid:vd.txRevMid*rev,high:(vd.txRevHigh||0)*rev}));
+    if(vd.indMid>0&&rev>0)rows.push(clamp({low:(vd.indLow||0)*rev,mid:vd.indMid*rev,high:(vd.indHigh||0)*rev}));
+    let blendedData=null;
+    if(rows.length){
+      const avg=arr=>arr.reduce((a,b)=>a+b,0)/arr.length;
+      const raw={low:avg(rows.map(m=>m.low)),mid:avg(rows.map(m=>m.mid)),high:avg(rows.map(m=>m.high))};
+      const s=[raw.low,raw.mid,raw.high].sort((a,b)=>a-b);
+      blendedData={low:s[0],mid:s[1],high:s[2]};
+    }
+    pushLeadToAttio(gate,cfg,blendedData);
+  },[resultsReady,gate,cfg,vd]);
 
   // Wait for AI comps to finish + minimum display time, then reveal results
   const gateTimeRef=useRef(null);
