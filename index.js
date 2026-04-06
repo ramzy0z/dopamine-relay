@@ -101,7 +101,7 @@ app.post('/submit-lead', async (req, res) => {
   const {
     companyName, domain, description, sector, geo,
     contactName, contactEmail,
-    revenueUsd, ebitdaUsd,
+    revenueUsd, ebitdaUsd, ownerSalaryUsd,
     leadSource,
     maScore, scoreBand,
     valuationLowUsd, valuationMidUsd, valuationHighUsd
@@ -113,6 +113,7 @@ app.post('/submit-lead', async (req, res) => {
 
   const revenueAed       = toAed(revenueUsd);
   const ebitdaAed        = toAed(ebitdaUsd);
+  const ownerSalaryAed   = toAed(ownerSalaryUsd);
   const valuationLowAed  = toAed(valuationLowUsd);
   const valuationMidAed  = toAed(valuationMidUsd);
   const valuationHighAed = toAed(valuationHighUsd);
@@ -136,6 +137,7 @@ app.post('/submit-lead', async (req, res) => {
     // Step 1: Upsert company record
     const companyValues = { domains: [domain.trim()], name: companyName || '' };
     if (description) companyValues.description = description;
+    if (leadSource)  companyValues.lead_source = [leadSource];
 
     const upsert = await attio(
       '/v2/objects/companies/records?matching_attribute=domains',
@@ -164,6 +166,7 @@ app.post('/submit-lead', async (req, res) => {
     if (valuationHighAed != null) leadMagnetEntryValues.valuation_high_aed    = valuationHighAed;
     if (maScore != null)          leadMagnetEntryValues.m_a_readiness_score   = maScore;
     if (scoreBand)                leadMagnetEntryValues.readiness_band        = normaliseBand(scoreBand);
+    if (ownerSalaryAed != null)   leadMagnetEntryValues.owner_salary          = ownerSalaryAed;
 
     const lmEntry = await attio(
       '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries',
