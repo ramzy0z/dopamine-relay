@@ -81,6 +81,16 @@ app.post('/attio', async (req, res) => {
 const AED_PEG = 3.6725;
 const toAed = (usd) => (usd != null && !isNaN(usd)) ? Math.round(Number(usd) * AED_PEG) : null;
 
+// Map M&A Readiness Tool band labels -> Attio select option titles
+const BAND_MAP = {
+  'not ready':    'Early',
+  'early stage':  'Early',
+  'getting there':'Developing',
+  'nearly ready': 'Sale Ready',
+  'exit ready':   'Market Ready'
+};
+const normaliseBand = (b) => b ? (BAND_MAP[b.toLowerCase().trim()] || b) : null;
+
 const LEAD_MAGNET_LIST_ID = '60ffc158-8444-4d29-b072-e6ed0c374596';
 const SELLER_DB_LIST_ID   = '6c2ea989-a5d7-4257-8d7c-f58268718de9';
 
@@ -144,9 +154,16 @@ app.post('/submit-lead', async (req, res) => {
     }
 
     // Step 2: Add to Lead Magnet Inbound list
-    // NOTE: entry_values will be populated with field slugs once 3.3 fields
-    // are created in Attio. Currently only system fields exist on this list.
     const leadMagnetEntryValues = {};
+    if (contactName)              leadMagnetEntryValues.owner_name            = contactName;
+    if (contactEmail)             leadMagnetEntryValues.owner_email           = contactEmail;
+    if (revenueAed != null)       leadMagnetEntryValues.annual_revenue_aed    = revenueAed;
+    if (ebitdaAed != null)        leadMagnetEntryValues.ebitda_estimate_aed_5 = ebitdaAed;
+    if (valuationLowAed != null)  leadMagnetEntryValues.valuation_low_aed_6   = valuationLowAed;
+    if (valuationMidAed != null)  leadMagnetEntryValues.valuation_mid_aed     = valuationMidAed;
+    if (valuationHighAed != null) leadMagnetEntryValues.valuation_high_aed    = valuationHighAed;
+    if (maScore != null)          leadMagnetEntryValues.m_a_readiness_score   = maScore;
+    if (scoreBand)                leadMagnetEntryValues.readiness_band        = normaliseBand(scoreBand);
 
     const lmEntry = await attio(
       '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries',
