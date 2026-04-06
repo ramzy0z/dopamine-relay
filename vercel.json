@@ -1,6 +1,10 @@
 {
-  "rewrites": [
-    { "source": "/valuation", "destination": "/dopamine-valuation.html" },
-    { "source": "/readiness", "destination": "/dopamine-readiness-score.html" }
+  "version": 2,
+  "builds": [
+    { "src": "*.html", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/valuation", "dest": "/dopamine-valuation.html" },
+    { "src": "/readiness", "dest": "/dopamine-readiness-score.html" }
   ]
 }
