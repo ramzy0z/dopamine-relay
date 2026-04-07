@@ -3010,7 +3010,12 @@ function App(){
   // When AI comps arrive, update trading comps in vd immediately
   useEffect(()=>{
     if(!aiComps||!aiComps.length||!gate)return;
-     const rS=getStats(revM),eS=getStats(ebM);
+    const adjEBITDA=(gate.profitBeforeTax||0)+(gate.ownerSalary||0);
+    const negEbitda=adjEBITDA<0;
+    const valid=aiComps.filter(c=>c.rev>0);
+    const revM=valid.map(c=>c.ev/c.rev);
+    const ebM=valid.filter(c=>c.ebitda>0).map(c=>c.ev/c.ebitda);
+    const rS=getStats(revM),eS=getStats(ebM);
     const adjDRev=negEbitda?50:30;
     const adjDEb=negEbitda?50:30;
     const disc=1-adjDRev/100,discEb=1-adjDEb/100;
