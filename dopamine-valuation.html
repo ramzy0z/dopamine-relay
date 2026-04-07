@@ -390,7 +390,7 @@ textarea.fi{resize:vertical;min-height:64px;transition:height 0.4s ease,border-c
       </div>
       <div class="footer__link-blocks-contact">
         <div class="text-block-10">Contact us:</div>
-        <a href="/cdn-cgi/l/email-protection#81e2eeeff5e0e2f5c1e5eef1e0ece8efe4e2e0f1afe2eeec" class="footer__nav-link-contact"><span class="__cf_email__" data-cfemail="f5969a9b81949681b5919a8594989c9b90969485db969a98">[email&#160;protected]</span></a>
+        <a href="/cdn-cgi/l/email-protection#d1b2bebfa5b0b2a591b5bea1b0bcb8bfb4b2b0a1ffb2bebc" class="footer__nav-link-contact"><span class="__cf_email__" data-cfemail="dfbcb0b1abbebcab9fbbb0afbeb2b6b1babcbeaff1bcb0b2">[email&#160;protected]</span></a>
       </div>
       <div class="copyright-footer-text-contact">© 2026 Dopamine Innovation Consultancy FZCO.<br>All rights reserved.<br>Dubai, United Arab Emirates</div>
     </div>
@@ -3010,12 +3010,7 @@ function App(){
   // When AI comps arrive, update trading comps in vd immediately
   useEffect(()=>{
     if(!aiComps||!aiComps.length||!gate)return;
-    const adjEBITDA=(gate.profitBeforeTax||0)+(gate.ownerSalary||0);
-    const negEbitda=adjEBITDA<0;
-    const valid=aiComps.filter(c=>c.rev>0);
-    const revM=valid.map(c=>c.ev/c.rev);
-    const ebM=valid.filter(c=>c.ebitda>0).map(c=>c.ev/c.ebitda);
-    const rS=getStats(revM),eS=getStats(ebM);
+     const rS=getStats(revM),eS=getStats(ebM);
     const adjDRev=negEbitda?50:30;
     const adjDEb=negEbitda?50:30;
     const disc=1-adjDRev/100,discEb=1-adjDEb/100;
@@ -3060,4 +3055,16 @@ function App(){
               <h2 style={{fontSize:22,fontWeight:800,color:"#0e0e0e",marginBottom:10,letterSpacing:"-0.3px",lineHeight:1.3}}>Book a Call to Receive Your Full Report</h2>
               <p style={{fontSize:14,color:"#888",lineHeight:1.6,marginBottom:28}}>Your {gate.sector} business in {gate.geo} has been valued across multiple methods. Book a free 30-min call with our team to walk through the full analysis.</p>
               <a href="https://calendar.app.google/ox96LtGDk8C2F8BT9" target="_blank" style={{display:"block",width:"100%",padding:"14px",background:"#000",color:"#fff",borderRadius:8,fontSize:15,fontWeight:700,cursor:"pointer",textDecoration:"none",fontFamily:"Outfit,sans-serif",boxSizing:"border-box"}}>Book My Free Call →</a>
-              <div style={{fontSize:11,color:"#aaa
+              <div style={{fontSize:11,color:"#aaa",marginTop:10}}>Free · No commitment · Response within 24 hours</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
