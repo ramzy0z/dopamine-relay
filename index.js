@@ -129,7 +129,7 @@ Respond with ONLY valid JSON, no markdown:
   return JSON.parse(match[0]);
 }
 
-// ─── STRUCTURED LEAD SUBMISSION ───────────────────────────────────────────────
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
 const AED_PEG = 3.6725;
 const toAed = (usd) => (usd != null && !isNaN(usd)) ? Math.round(Number(usd) * AED_PEG) : null;
 
@@ -142,9 +142,22 @@ const BAND_MAP = {
 };
 const normaliseBand = (b) => b ? (BAND_MAP[b.toLowerCase().trim()] || b) : null;
 
+// Append a new value to a plain text field using " | " as separator.
+// If the existing value already contains the new value (case-insensitive), no-op.
+// Returns the merged string, or the new value if nothing existed yet.
+const appendText = (existing, incoming) => {
+  if (!incoming) return existing || null;
+  if (!existing)  return incoming;
+  // Avoid duplicating: check if incoming is already present as a segment
+  const segments = existing.split(' | ').map(s => s.trim().toLowerCase());
+  if (segments.includes(incoming.trim().toLowerCase())) return existing;
+  return existing + ' | ' + incoming;
+};
+
 const LEAD_MAGNET_LIST_ID = '60ffc158-8444-4d29-b072-e6ed0c374596';
 const SELLER_DB_LIST_ID   = '6c2ea989-a5d7-4257-8d7c-f58268718de9';
 
+// ─── STRUCTURED LEAD SUBMISSION ───────────────────────────────────────────────
 app.post('/submit-lead', async (req, res) => {
   const ATTIO_KEY  = process.env.ATTIO_KEY;
   const CLAUDE_KEY = process.env.CLAUDE_KEY;
@@ -202,14 +215,17 @@ app.post('/submit-lead', async (req, res) => {
     }
   };
 
+  // Extract a plain text value from an Attio entry_values attribute array
+  const extractText = (entryValues, slug) => {
+    const attr = entryValues?.[slug];
+    if (!Array.isArray(attr) || attr.length === 0) return null;
+    return attr[0]?.value ?? null;
+  };
+
   const log = [];
 
   try {
     // ── Step 1: Query existing company record to read current lead_source ──────
-    // FIX 1: Attio record queries require POST .../records/query with a JSON body.
-    // The previous attempt used a GET with query params -- that always returned
-    // zero results, so existingLeadSources was always empty and the upsert always
-    // overwrote lead_source with only the new single value.
     let existingLeadSources = [];
 
     const queryCompany = await attio(
@@ -229,7 +245,6 @@ app.post('/submit-lead', async (req, res) => {
     }
     log.push({ step: 'fetch_existing_lead_source', found: existingLeadSources });
 
-    // Merge: add new value only if not already present
     const mergedLeadSources = leadSource
       ? Array.from(new Set([...existingLeadSources, leadSource]))
       : existingLeadSources;
@@ -250,7 +265,6 @@ app.post('/submit-lead', async (req, res) => {
       return res.status(502).json({ error: 'Company upsert failed', detail: upsert.data, log });
     }
 
-    // Chain all known record_id paths to handle new vs existing response shapes
     const recordId =
       upsert.data?.data?.id?.record_id ||
       upsert.data?.data?.record_id      ||
@@ -262,11 +276,6 @@ app.post('/submit-lead', async (req, res) => {
     }
 
     // ── Step 3: Fetch all list entries for this company record ─────────────────
-    // FIX 2: Use GET /v2/objects/companies/records/{record_id}/entries which returns
-    // all list memberships for this record. Filter client-side by list_id.
-    // The previous /entries/query approach with { filter: { parent_record_id } }
-    // is not a valid Attio filter key and silently returned empty results every
-    // time, so the code always fell through to POST and created duplicate entries.
     let existingLmEntryId     = null;
     let existingSellerEntryId = null;
 
@@ -288,11 +297,12 @@ app.post('/submit-lead', async (req, res) => {
       }
     }
 
-    // ── Step 4: Fetch full entry details to check existing revenue values ──────
-    // FIX 3: The /records/{id}/entries endpoint returns only metadata (list_id,
-    // entry_id). We need the full entry to read entry_values and determine whether
-    // annual_revenue_aed is already populated before deciding to write it.
+    // ── Step 4: Fetch full entry details ──────────────────────────────────────
+    // Read existing revenue (protect valuation tool value) and existing contact
+    // text fields (to append, not overwrite, for Option C multi-contact support).
     let existingLmRevenue     = false;
+    let existingLmOwnerName   = null;
+    let existingLmOwnerEmail  = null;
     let existingSellerRevenue = false;
 
     if (existingLmEntryId) {
@@ -302,10 +312,19 @@ app.post('/submit-lead', async (req, res) => {
         undefined
       );
       if (lmDetail.ok) {
-        const raw = lmDetail.data?.data?.entry_values?.annual_revenue_aed;
-        existingLmRevenue = Array.isArray(raw) ? raw.length > 0 : raw != null;
+        const ev = lmDetail.data?.data?.entry_values;
+        const raw = ev?.annual_revenue_aed;
+        existingLmRevenue    = Array.isArray(raw) ? raw.length > 0 : raw != null;
+        existingLmOwnerName  = extractText(ev, 'owner_name');
+        existingLmOwnerEmail = extractText(ev, 'owner_email');
       }
-      log.push({ step: 'fetch_lm_entry_detail', entryId: existingLmEntryId, revenueAlreadySet: existingLmRevenue });
+      log.push({
+        step: 'fetch_lm_entry_detail',
+        entryId: existingLmEntryId,
+        revenueAlreadySet: existingLmRevenue,
+        existingOwnerName: existingLmOwnerName,
+        existingOwnerEmail: existingLmOwnerEmail
+      });
     }
 
     if (existingSellerEntryId) {
@@ -322,10 +341,16 @@ app.post('/submit-lead', async (req, res) => {
     }
 
     // ── Step 5: Lead Magnet Inbound list -- PATCH if exists, POST if not ───────
+    // owner_name and owner_email are plain text fields (confirmed via schema).
+    // Option C: append new contact details to existing value using " | " separator
+    // so no submitter's data is ever lost.
+    const mergedOwnerName  = appendText(existingLmOwnerName,  contactName);
+    const mergedOwnerEmail = appendText(existingLmOwnerEmail, contactEmail);
+
     const buildLeadMagnetPayload = (omitRevenue) => {
       const v = {};
-      if (contactName)              v.owner_name             = contactName;
-      if (contactEmail)             v.owner_email            = contactEmail;
+      if (mergedOwnerName)          v.owner_name             = mergedOwnerName;
+      if (mergedOwnerEmail)         v.owner_email            = mergedOwnerEmail;
       if (!omitRevenue && revenueAed != null) v.annual_revenue_aed = revenueAed;
       if (ebitdaAed != null)        v.ebitda_estimate_aed_5  = ebitdaAed;
       if (valuationLowAed != null)  v.valuation_low_aed_6    = valuationLowAed;
@@ -345,7 +370,13 @@ app.post('/submit-lead', async (req, res) => {
         'PATCH',
         { data: { entry_values: buildLeadMagnetPayload(existingLmRevenue) } }
       );
-      log.push({ step: 'lead_magnet_list', action: 'patch', entryId: existingLmEntryId, omitRevenue: existingLmRevenue, status: lmPatch.status, ok: lmPatch.ok });
+      log.push({
+        step: 'lead_magnet_list', action: 'patch',
+        entryId: existingLmEntryId,
+        omitRevenue: existingLmRevenue,
+        mergedOwnerName, mergedOwnerEmail,
+        status: lmPatch.status, ok: lmPatch.ok
+      });
     } else {
       const lmPost = await attio(
         '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries',
@@ -357,12 +388,14 @@ app.post('/submit-lead', async (req, res) => {
     }
 
     // ── Step 6: Seller Database list -- PATCH if exists, POST if not ──────────
+    // NOTE: The Seller DB list schema does not include contact_person_owner or
+    // reach_out_email attributes. Those slugs were removed from this payload to
+    // avoid writing to non-existent fields. If you need contact fields here,
+    // add them to the list schema in Attio first, then re-add them below.
     const buildSellerPayload = (omitRevenue) => {
       const v = {};
       if (!omitRevenue && revenueAed != null) v.estimated_annual_revenue_aed = revenueAed;
-      if (ebitdaAed != null)  v.estimated_ebitda_aed = ebitdaAed;
-      if (contactName)        v.contact_person_owner = contactName;
-      if (contactEmail)       v.reach_out_email      = contactEmail;
+      if (ebitdaAed != null) v.estimated_ebitda_aed = ebitdaAed;
       return v;
     };
 
