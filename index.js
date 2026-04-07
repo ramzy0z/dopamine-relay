@@ -187,13 +187,15 @@ app.post('/submit-lead', async (req, res) => {
     }
   }
 
+  // Attio helper -- omits body for GET requests
   const attio = async (endpoint, method, body) => {
     try {
-      const r = await fetch('https://api.attio.com' + endpoint, {
+      const opts = {
         method,
-        headers: { 'Authorization': 'Bearer ' + ATTIO_KEY, 'Content-Type': 'application/json' },
-        body: body !== undefined ? JSON.stringify(body) : undefined
-      });
+        headers: { 'Authorization': 'Bearer ' + ATTIO_KEY, 'Content-Type': 'application/json' }
+      };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const r = await fetch('https://api.attio.com' + endpoint, opts);
       return { ok: r.ok, status: r.status, data: await r.json() };
     } catch (e) {
       return { ok: false, status: 0, error: e.message };
@@ -203,41 +205,39 @@ app.post('/submit-lead', async (req, res) => {
   const log = [];
 
   try {
-    // ── Step 1: Fetch existing company record to read current lead_source ──────
-    // FIX 1: We must merge lead_source values, not overwrite them.
-    // Query by domain before the upsert so we can read the current multi-select state.
+    // ── Step 1: Query existing company record to read current lead_source ──────
+    // FIX 1: Attio record queries require POST .../records/query with a JSON body.
+    // The previous attempt used a GET with query params -- that always returned
+    // zero results, so existingLeadSources was always empty and the upsert always
+    // overwrote lead_source with only the new single value.
     let existingLeadSources = [];
-    const fetchCompany = await attio(
-      '/v2/objects/companies/records?matching_attribute=domains&' +
-        new URLSearchParams({ 'filter[domains]': domain.trim() }).toString(),
-      'GET',
-      undefined
+
+    const queryCompany = await attio(
+      '/v2/objects/companies/records/query',
+      'POST',
+      { filter: { domains: { domain: { $eq: domain.trim() } } }, limit: 1 }
     );
-    // The GET /records endpoint returns { data: [...] }. A 200 with an empty
-    // array means no record yet; any other non-ok status we ignore gracefully
-    // and fall through to an overwrite (safe for first-time submissions).
-    if (fetchCompany.ok) {
-      const existing = fetchCompany.data?.data?.[0];
-      if (existing) {
-        const lsAttr = existing.values?.lead_source;
-        if (Array.isArray(lsAttr)) {
-          existingLeadSources = lsAttr
-            .map(v => v?.option?.title || v?.value || null)
-            .filter(Boolean);
-        }
+
+    if (queryCompany.ok && queryCompany.data?.data?.length > 0) {
+      const existing = queryCompany.data.data[0];
+      const lsAttr = existing.values?.lead_source;
+      if (Array.isArray(lsAttr)) {
+        existingLeadSources = lsAttr
+          .map(v => v?.option?.title || v?.value || null)
+          .filter(Boolean);
       }
     }
-    log.push({ step: 'fetch_existing_lead_source', values: existingLeadSources });
+    log.push({ step: 'fetch_existing_lead_source', found: existingLeadSources });
 
-    // Merge: add the new value if not already present
+    // Merge: add new value only if not already present
     const mergedLeadSources = leadSource
       ? Array.from(new Set([...existingLeadSources, leadSource]))
       : existingLeadSources;
 
     // ── Step 2: Upsert company record ─────────────────────────────────────────
     const companyValues = { domains: [domain.trim()], name: companyName || '' };
-    if (description)                companyValues.description = description;
-    if (mergedLeadSources.length)   companyValues.lead_source = mergedLeadSources;
+    if (description)               companyValues.description = description;
+    if (mergedLeadSources.length)  companyValues.lead_source = mergedLeadSources;
 
     const upsert = await attio(
       '/v2/objects/companies/records?matching_attribute=domains',
@@ -250,8 +250,7 @@ app.post('/submit-lead', async (req, res) => {
       return res.status(502).json({ error: 'Company upsert failed', detail: upsert.data, log });
     }
 
-    // Attio returns the record_id nested differently for new vs existing records;
-    // chain all known paths defensively.
+    // Chain all known record_id paths to handle new vs existing response shapes
     const recordId =
       upsert.data?.data?.id?.record_id ||
       upsert.data?.data?.record_id      ||
@@ -262,11 +261,67 @@ app.post('/submit-lead', async (req, res) => {
       return res.status(502).json({ error: 'No record ID returned from upsert', log });
     }
 
-    // ── Step 3: Lead Magnet Inbound list -- upsert, no duplicates ─────────────
-    // FIX 2: Query the list for an existing entry matching this record_id.
-    // FIX 3: If an entry exists and already has annual_revenue_aed set, do not
-    //         overwrite it (valuation tool's exact figure takes permanent precedence).
+    // ── Step 3: Fetch all list entries for this company record ─────────────────
+    // FIX 2: Use GET /v2/objects/companies/records/{record_id}/entries which returns
+    // all list memberships for this record. Filter client-side by list_id.
+    // The previous /entries/query approach with { filter: { parent_record_id } }
+    // is not a valid Attio filter key and silently returned empty results every
+    // time, so the code always fell through to POST and created duplicate entries.
+    let existingLmEntryId     = null;
+    let existingSellerEntryId = null;
 
+    const allEntries = await attio(
+      '/v2/objects/companies/records/' + recordId + '/entries',
+      'GET',
+      undefined
+    );
+    log.push({ step: 'fetch_record_entries', status: allEntries.status, ok: allEntries.ok });
+
+    if (allEntries.ok && Array.isArray(allEntries.data?.data)) {
+      for (const entry of allEntries.data.data) {
+        if (entry.list_id === LEAD_MAGNET_LIST_ID && !existingLmEntryId) {
+          existingLmEntryId = entry.entry_id;
+        }
+        if (entry.list_id === SELLER_DB_LIST_ID && !existingSellerEntryId) {
+          existingSellerEntryId = entry.entry_id;
+        }
+      }
+    }
+
+    // ── Step 4: Fetch full entry details to check existing revenue values ──────
+    // FIX 3: The /records/{id}/entries endpoint returns only metadata (list_id,
+    // entry_id). We need the full entry to read entry_values and determine whether
+    // annual_revenue_aed is already populated before deciding to write it.
+    let existingLmRevenue     = false;
+    let existingSellerRevenue = false;
+
+    if (existingLmEntryId) {
+      const lmDetail = await attio(
+        '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries/' + existingLmEntryId,
+        'GET',
+        undefined
+      );
+      if (lmDetail.ok) {
+        const raw = lmDetail.data?.data?.entry_values?.annual_revenue_aed;
+        existingLmRevenue = Array.isArray(raw) ? raw.length > 0 : raw != null;
+      }
+      log.push({ step: 'fetch_lm_entry_detail', entryId: existingLmEntryId, revenueAlreadySet: existingLmRevenue });
+    }
+
+    if (existingSellerEntryId) {
+      const sellerDetail = await attio(
+        '/v2/lists/' + SELLER_DB_LIST_ID + '/entries/' + existingSellerEntryId,
+        'GET',
+        undefined
+      );
+      if (sellerDetail.ok) {
+        const raw = sellerDetail.data?.data?.entry_values?.estimated_annual_revenue_aed;
+        existingSellerRevenue = Array.isArray(raw) ? raw.length > 0 : raw != null;
+      }
+      log.push({ step: 'fetch_seller_entry_detail', entryId: existingSellerEntryId, revenueAlreadySet: existingSellerRevenue });
+    }
+
+    // ── Step 5: Lead Magnet Inbound list -- PATCH if exists, POST if not ───────
     const buildLeadMagnetPayload = (omitRevenue) => {
       const v = {};
       if (contactName)              v.owner_name             = contactName;
@@ -284,34 +339,14 @@ app.post('/submit-lead', async (req, res) => {
       return v;
     };
 
-    // Query list entries for this parent record
-    const lmQuery = await attio(
-      '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries/query',
-      'POST',
-      { filter: { parent_record_id: recordId } }
-    );
-
-    const existingLmEntry = lmQuery.ok ? lmQuery.data?.data?.[0] : null;
-
-    if (existingLmEntry) {
-      // Entry exists -- PATCH it
-      const existingEntryId = existingLmEntry.id?.entry_id || existingLmEntry.entry_id;
-
-      // FIX 3: Check whether annual_revenue_aed is already populated
-      const existingRevenueRaw = existingLmEntry.entry_values?.annual_revenue_aed;
-      const existingRevenueSet =
-        Array.isArray(existingRevenueRaw) ? existingRevenueRaw.length > 0
-        : existingRevenueRaw != null;
-      const omitRevenue = existingRevenueSet;
-
+    if (existingLmEntryId) {
       const lmPatch = await attio(
-        '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries/' + existingEntryId,
+        '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries/' + existingLmEntryId,
         'PATCH',
-        { data: { entry_values: buildLeadMagnetPayload(omitRevenue) } }
+        { data: { entry_values: buildLeadMagnetPayload(existingLmRevenue) } }
       );
-      log.push({ step: 'lead_magnet_list', action: 'patch', entryId: existingEntryId, omitRevenue, status: lmPatch.status, ok: lmPatch.ok });
+      log.push({ step: 'lead_magnet_list', action: 'patch', entryId: existingLmEntryId, omitRevenue: existingLmRevenue, status: lmPatch.status, ok: lmPatch.ok });
     } else {
-      // No existing entry -- POST a new one
       const lmPost = await attio(
         '/v2/lists/' + LEAD_MAGNET_LIST_ID + '/entries',
         'POST',
@@ -321,42 +356,23 @@ app.post('/submit-lead', async (req, res) => {
       log.push({ step: 'lead_magnet_list', action: 'post', status: lmPost.status, ok: lmOk });
     }
 
-    // ── Step 4: Seller Database list -- upsert, no duplicates ─────────────────
-    // FIX 2 (same pattern): query first, PATCH if exists, POST if not.
-
+    // ── Step 6: Seller Database list -- PATCH if exists, POST if not ──────────
     const buildSellerPayload = (omitRevenue) => {
       const v = {};
       if (!omitRevenue && revenueAed != null) v.estimated_annual_revenue_aed = revenueAed;
-      if (ebitdaAed != null)  v.estimated_ebitda_aed   = ebitdaAed;
-      if (contactName)        v.contact_person_owner   = contactName;
-      if (contactEmail)       v.reach_out_email        = contactEmail;
+      if (ebitdaAed != null)  v.estimated_ebitda_aed = ebitdaAed;
+      if (contactName)        v.contact_person_owner = contactName;
+      if (contactEmail)       v.reach_out_email      = contactEmail;
       return v;
     };
 
-    const sellerQuery = await attio(
-      '/v2/lists/' + SELLER_DB_LIST_ID + '/entries/query',
-      'POST',
-      { filter: { parent_record_id: recordId } }
-    );
-
-    const existingSellerEntry = sellerQuery.ok ? sellerQuery.data?.data?.[0] : null;
-
-    if (existingSellerEntry) {
-      const existingEntryId = existingSellerEntry.id?.entry_id || existingSellerEntry.entry_id;
-
-      // FIX 3: Same revenue-protection rule for the Seller DB list
-      const existingRevenueRaw = existingSellerEntry.entry_values?.estimated_annual_revenue_aed;
-      const existingRevenueSet =
-        Array.isArray(existingRevenueRaw) ? existingRevenueRaw.length > 0
-        : existingRevenueRaw != null;
-      const omitRevenue = existingRevenueSet;
-
+    if (existingSellerEntryId) {
       const sellerPatch = await attio(
-        '/v2/lists/' + SELLER_DB_LIST_ID + '/entries/' + existingEntryId,
+        '/v2/lists/' + SELLER_DB_LIST_ID + '/entries/' + existingSellerEntryId,
         'PATCH',
-        { data: { entry_values: buildSellerPayload(omitRevenue) } }
+        { data: { entry_values: buildSellerPayload(existingSellerRevenue) } }
       );
-      log.push({ step: 'seller_db_list', action: 'patch', entryId: existingEntryId, omitRevenue, status: sellerPatch.status, ok: sellerPatch.ok });
+      log.push({ step: 'seller_db_list', action: 'patch', entryId: existingSellerEntryId, omitRevenue: existingSellerRevenue, status: sellerPatch.status, ok: sellerPatch.ok });
     } else {
       const sellerPost = await attio(
         '/v2/lists/' + SELLER_DB_LIST_ID + '/entries',
