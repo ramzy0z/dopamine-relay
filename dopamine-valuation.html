@@ -1941,7 +1941,7 @@ function IndustryResearch({gate,cfg,onUpdate}){
 
 
 // ===== VALUATION SUMMARY (shown at TOP) =====
-function ValuationSummary({gate,cfg,vd}){
+function ValuationSummary({gate,cfg,vd,unlocked=true}){
   const cur=(gate&&gate.inputCurrency)||"USD";
   const rev=cfg.revenue||0;
   const ebitda=cfg.ebitda||0;
@@ -1986,7 +1986,7 @@ function ValuationSummary({gate,cfg,vd}){
       </div>
       <div className="val-hero-sub">Blended across {methods.length} method{methods.length!==1?"s":""} | {gate?gate.sector:""} | {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</div>
       {!hasEbitda&&methods.length>0&&<div style={{fontSize:11,opacity:0.6,marginTop:6,lineHeight:1.4}}>Note: Pre-profit company. Valuation weighted toward revenue-based methods. EBITDA multiples excluded.</div>}
-      {methods.length>0&&<>
+      {methods.length>0&&<div style={unlocked?{}:{filter:"blur(2.5px)",pointerEvents:"none",userSelect:"none",opacity:0.7}}>
         <table className="range-table" style={{marginTop:20}}>
           <thead>
             <tr>
@@ -2020,7 +2020,7 @@ function ValuationSummary({gate,cfg,vd}){
           <div style={{fontSize:10,opacity:0.4}}>For informational purposes only. Not financial advice. Lower/Upper = p25/p75 multiples and DCF +/-25% sensitivity.</div>
           <PDFExportButton gate={gate} cfg={cfg} vd={vd}/>
         </div>
-      </>}
+      </div>}
     </div>
   );
 }
@@ -2051,8 +2051,7 @@ function InputsCard({gate,cfg}){
 // ===== LINKEDIN PAYWALL GATE V2 =====
 // Before unlock: shows generic strategic analysis preview + LinkedIn gate
 // After unlock: removes preview, runs AI strategic analysis + all modules
-function LinkedInGateV2({gate,cfg,aiComps,onUpdate,vd}){
-  const [unlocked,setUnlocked]=useState(true);
+function LinkedInGateV2({gate,cfg,aiComps,onUpdate,vd,unlocked}){
 
   // Generic (non-AI) strategic analysis - fallback only if the teaser call fails
   const localPreview=useMemo(()=>{
@@ -2191,49 +2190,35 @@ function LinkedInGateV2({gate,cfg,aiComps,onUpdate,vd}){
                 </div>
               </div>
             )}
-            {/* Blurred tease - 1 more strength + 1 more risk + 1 more insight behind the fade */}
-            <div style={{position:"relative",overflow:"hidden",maxHeight:170,marginTop:12}}>
-              <div style={{filter:"blur(4px)",pointerEvents:"none",userSelect:"none",opacity:0.45}}>
-                <div className="strat-section" style={{marginBottom:12}}>
-                  <div className="strat-section-title pros"><span>&#x2714;</span> Key Strength</div>
-                  <div className="strat-item pro">
-                    <div className="strat-item-icon">+</div>
-                    <div className="strat-item-text"><strong>{previewAnalysis.hiddenStrength.title}</strong>{previewAnalysis.hiddenStrength.body}</div>
-                  </div>
-                </div>
-                {previewAnalysis.hiddenRisk&&(
-                  <div className="strat-section" style={{marginBottom:12}}>
-                    <div className="strat-section-title cons"><span>&#x26A0;</span> Key Risk</div>
-                    <div className="strat-item con">
-                      <div className="strat-item-icon">-</div>
-                      <div className="strat-item-text"><strong>{previewAnalysis.hiddenRisk.title}</strong>{previewAnalysis.hiddenRisk.body}</div>
-                    </div>
-                  </div>
-                )}
-                <div className="strat-section" style={{marginBottom:0}}>
-                  <div className="strat-section-title insights"><span>&#x27A4;</span> Strategic Insight</div>
-                  <div className="strat-item insight">
-                    <div className="strat-item-icon">&#x2192;</div>
-                    <div className="strat-item-text"><strong>{previewAnalysis.hiddenInsight.title}</strong>{previewAnalysis.hiddenInsight.body}</div>
-                  </div>
+            {/* Additional strength + risk + insight (sits under the single outer gate blur) */}
+            <div style={{marginTop:12}}>
+              <div className="strat-section" style={{marginBottom:12}}>
+                <div className="strat-section-title pros"><span>&#x2714;</span> Key Strength</div>
+                <div className="strat-item pro">
+                  <div className="strat-item-icon">+</div>
+                  <div className="strat-item-text"><strong>{previewAnalysis.hiddenStrength.title}</strong>{previewAnalysis.hiddenStrength.body}</div>
                 </div>
               </div>
-              <div style={{position:"absolute",bottom:0,left:0,right:0,height:"100%",background:"linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 92%)"}}/>
+              {previewAnalysis.hiddenRisk&&(
+                <div className="strat-section" style={{marginBottom:12}}>
+                  <div className="strat-section-title cons"><span>&#x26A0;</span> Key Risk</div>
+                  <div className="strat-item con">
+                    <div className="strat-item-icon">-</div>
+                    <div className="strat-item-text"><strong>{previewAnalysis.hiddenRisk.title}</strong>{previewAnalysis.hiddenRisk.body}</div>
+                  </div>
+                </div>
+              )}
+              <div className="strat-section" style={{marginBottom:0}}>
+                <div className="strat-section-title insights"><span>&#x27A4;</span> Strategic Insight</div>
+                <div className="strat-item insight">
+                  <div className="strat-item-icon">&#x2192;</div>
+                  <div className="strat-item-text"><strong>{previewAnalysis.hiddenInsight.title}</strong>{previewAnalysis.hiddenInsight.body}</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       )}
-      {/* LinkedIn gate - directly after preview */}
-      <div style={{background:"#fff",border:"1.5px solid #e0e4f0",borderRadius:16,padding:"36px 40px",textAlign:"center",maxWidth:420,margin:"0 auto 24px",boxShadow:"0 8px 40px rgba(0,9,54,0.12)"}}>
-        <div className="paywall-logo">in</div>
-        <div className="paywall-title">Unlock the Full Analysis</div>
-        <div className="paywall-sub">Follow Wusool Capital on LinkedIn to access the full AI-powered strategic analysis and all valuation modules.</div>
-        <a href="https://www.linkedin.com/company/dopaminecap/people/" target="_blank" rel="noopener noreferrer" className="paywall-btn-li">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
-          Follow on LinkedIn
-        </a>
-        <button className="paywall-btn-done" onClick={()=>setUnlocked(true)}>I've followed - show me the analysis</button>
-      </div>
     </div>
   );
 }
@@ -2839,6 +2824,7 @@ function App(){
   const [aiComps,setAiComps]=useState(null);
   const [aiCompsStatus,setAiCompsStatus]=useState("idle");
   const [resultsReady,setResultsReady]=useState(false);
+  const [reportUnlocked,setReportUnlocked]=useState(false);
   const [vd,setVd]=useState({
     dcfEV:0,dcfEquity:0,
     trRevLow:0,trRevMid:0,trRevHigh:0,
@@ -3061,23 +3047,30 @@ function App(){
             <p>{gate.companyName} | {gate.sector} | {gate.geo}</p>
           </div>
         </div>
-        <ValuationSummary gate={gate} cfg={cfg} vd={vd}/>
-        <div style={{position:"relative",marginTop:24,minHeight:400}}>
-          <div style={{filter:"blur(5px)",pointerEvents:"none",userSelect:"none",opacity:0.45}}>
+        <ValuationSummary gate={gate} cfg={cfg} vd={vd} unlocked={reportUnlocked}/>
+        {reportUnlocked?(
+          <div style={{marginTop:24}}>
             <InputsCard gate={gate} cfg={cfg}/>
-            <LinkedInGateV2 gate={gate} cfg={cfg} aiComps={aiComps} onUpdate={upd} vd={vd}/>
+            <LinkedInGateV2 gate={gate} cfg={cfg} aiComps={aiComps} onUpdate={upd} vd={vd} unlocked={true}/>
           </div>
-          <div style={{position:"absolute",top:0,left:0,right:0,height:80,background:"linear-gradient(to bottom,#fff,transparent)",zIndex:1,pointerEvents:"none"}}/>
-          <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,display:"flex",alignItems:"center",justifyContent:"center",zIndex:2}}>
-            <div style={{background:"#fff",border:"1px solid #e8e8e8",borderRadius:8,padding:"40px 44px",maxWidth:460,width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.08)",textAlign:"center"}}>
+        ):(
+        <div style={{position:"relative",marginTop:24,minHeight:400}}>
+          <div style={{filter:"blur(2.5px)",pointerEvents:"none",userSelect:"none",opacity:0.7}} aria-hidden="true">
+            <InputsCard gate={gate} cfg={cfg}/>
+            <LinkedInGateV2 gate={gate} cfg={cfg} aiComps={aiComps} onUpdate={upd} vd={vd} unlocked={false}/>
+          </div>
+          <div style={{position:"absolute",top:0,left:0,right:0,height:64,background:"linear-gradient(to bottom,#fff,transparent)",zIndex:1,pointerEvents:"none"}}/>
+          <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,display:"flex",alignItems:"flex-start",justifyContent:"center",zIndex:2,paddingTop:90}}>
+            <div style={{position:"sticky",top:24,background:"#fff",border:"1px solid #e8e8e8",borderRadius:8,padding:"40px 44px",maxWidth:460,width:"100%",boxShadow:"0 12px 48px rgba(0,9,54,0.18)",textAlign:"center"}}>
               <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#f0fff8",border:"1px solid rgba(22,218,128,0.4)",borderRadius:8,padding:"4px 12px",fontSize:11,fontWeight:700,color:"#007a50",marginBottom:20,textTransform:"uppercase",letterSpacing:"0.5px"}}>Full Report Ready</div>
               <h2 style={{fontSize:22,fontWeight:800,color:"#000523",marginBottom:10,letterSpacing:"-0.3px",lineHeight:1.3}}>Get Your Free Valuation Report Now</h2>
               <p style={{fontSize:14,color:"#888",lineHeight:1.6,marginBottom:28}}>Your {gate.sector} business in {gate.geo} has been valued across multiple methods. Get your full report now and our team will walk you through the complete analysis.</p>
-              <a href="https://calendar.app.google/UfXxu6dBkZ8wjhnT6" target="_blank" style={{display:"block",width:"100%",padding:"14px",background:"#000523",color:"#fff",borderRadius:8,fontSize:15,fontWeight:700,cursor:"pointer",textDecoration:"none",fontFamily:"Inter,sans-serif",boxSizing:"border-box"}}>Get Your Free Valuation Report Now →</a>
+              <a href="https://calendar.app.google/UfXxu6dBkZ8wjhnT6" target="_blank" rel="noopener noreferrer" onClick={()=>setReportUnlocked(true)} style={{display:"block",width:"100%",padding:"14px",background:"#000523",color:"#fff",borderRadius:8,fontSize:15,fontWeight:700,cursor:"pointer",textDecoration:"none",fontFamily:"Inter,sans-serif",boxSizing:"border-box"}}>Get Your Free Valuation Report Now →</a>
               <div style={{fontSize:11,color:"#aaa",marginTop:10}}>Free · No commitment · Response within 24 hours</div>
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );
