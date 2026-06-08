@@ -2052,173 +2052,14 @@ function InputsCard({gate,cfg}){
 // Before unlock: shows generic strategic analysis preview + LinkedIn gate
 // After unlock: removes preview, runs AI strategic analysis + all modules
 function LinkedInGateV2({gate,cfg,aiComps,onUpdate,vd,unlocked}){
-
-  // Generic (non-AI) strategic analysis - fallback only if the teaser call fails
-  const localPreview=useMemo(()=>{
-    if(!gate||!cfg)return null;
-    return generateStrategicAnalysis(gate,cfg);
-  },[gate,cfg]);
-
-  // Lightweight AI teaser: a single low-token Claude call that returns
-  // 2 strengths + 2 risks + 2 insights, used only to populate the locked preview.
-  // The full StrategicAnalysis call still runs after unlock, untouched.
-  const [teaser,setTeaser]=useState(null);
-  const [teaserLoading,setTeaserLoading]=useState(true);
-
-  useEffect(()=>{
-    if(!gate||!cfg){setTeaserLoading(false);return;}
-    let cancelled=false;
-    const fetchTeaser=async()=>{
-      setTeaserLoading(true);
-      try{
-        const co=gate.companyName||"The company";
-        const sector=gate.sector||"";
-        const desc=(gate.description||"").substring(0,300);
-        const sys="You are a senior M&A advisor at a top-tier investment bank. Never use em dashes. Write precise, specific, analytical points - never generic statements that could apply to any company.";
-        const usr="Give exactly 2 strengths, 2 risks, and 2 strategic insights for this company, specific to its sector and business model. JSON only, no markdown:\n\nCompany: "+co+"\nSector: "+sector+(desc?"\nDescription: "+desc:"")+"\nGeography: "+(gate.geo||"")+"\n\nTitles 8 to 14 words, bold and declarative. Bodies 30 to 45 words. Never use em dashes or ** markdown.\n\nRespond with ONLY valid JSON:\n{\"strengths\":[{\"title\":\"...\",\"body\":\"...\"}],\"risks\":[{\"title\":\"...\",\"body\":\"...\"}],\"insights\":[{\"title\":\"...\",\"body\":\"...\"}]}";
-        const resp=await fetch(RELAY_BASE+"/claude",{
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({
-            model:"claude-sonnet-4-20250514",
-            max_tokens:900,
-            messages:[{role:"user",content:usr}],
-            system:sys
-          })
-        });
-        const data=await resp.json();
-        const textBlock=(data.content||[]).find(b=>b.type==="text");
-        if(textBlock&&textBlock.text){
-          const parsed=JSON.parse(textBlock.text.replace(/```json|```/g,"").trim());
-          const strip=s=>(s||"").replace(/\*\*/g,"");
-          const st=(parsed.strengths||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
-          const rk=(parsed.risks||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
-          const ins=(parsed.insights||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
-          if(st.length>=1&&ins.length>=1&&!cancelled){
-            setTeaser({strengths:st,risks:rk,insights:ins});
-            setTeaserLoading(false);
-            return;
-          }
-        }
-      }catch(e){
-        console.warn("Teaser AI call failed, using local fallback:",e);
-      }
-      if(!cancelled)setTeaserLoading(false);
-    };
-    fetchTeaser();
-    return()=>{cancelled=true;};
-  },[gate,cfg]);
-
-  // Build the preview from AI teaser when available, else local engine.
-  // visible: 1 strength + 1 insight (unblurred). hidden: 1 strength + 1 insight (blurred tease).
-  const previewAnalysis=useMemo(()=>{
-    const strengths=(teaser&&teaser.strengths.length?teaser.strengths:(localPreview?localPreview.pros:[]))||[];
-    const risks=(teaser&&teaser.risks&&teaser.risks.length?teaser.risks:(localPreview?localPreview.cons:[]))||[];
-    const insights=(teaser&&teaser.insights.length?teaser.insights:(localPreview?localPreview.insights:[]))||[];
-    if(!strengths.length&&!insights.length)return null;
-    return{
-      visibleStrength:strengths[0],
-      visibleRisk:risks[0],
-      visibleInsight:insights[0],
-      hiddenStrength:strengths[1]||strengths[0],
-      hiddenRisk:risks[1]||risks[0],
-      hiddenInsight:insights[1]||insights[0]
-    };
-  },[teaser,localPreview]);
-
-  if(unlocked){
-    return(
-      <div>
-        <StrategicAnalysis gate={gate} cfg={cfg}/>
-        <FundraiseReadiness gate={gate} cfg={cfg}/>
-        <DCFModule gate={gate} cfg={cfg} onUpdate={onUpdate}/>
-        <TradingComps gate={gate} cfg={cfg} onUpdate={onUpdate} aiComps={aiComps}/>
-        <TransactionComps gate={gate} cfg={cfg} onUpdate={onUpdate}/>
-        <IndustryResearch gate={gate} cfg={cfg} onUpdate={onUpdate}/>
-      </div>
-    );
-  }
-
   return(
     <div>
-      {/* AI-powered strategic teaser - 2 visible (strength + insight), 2 blurred */}
-      {teaserLoading&&(
-        <div className="strat-wrap" style={{marginBottom:16}}>
-          <div className="strat-hdr">
-            <h3>Strategic Analysis Preview</h3>
-            <p>Generating your AI-powered insights...</p>
-          </div>
-          <div className="strat-body" style={{paddingBottom:20}}>
-            <div className="ai-loader-status" style={{padding:"12px 0"}}>Analyzing {gate.companyName||"company"}&apos;s strategic position<span className="ai-loader-dots"><span>.</span><span>.</span><span>.</span></span></div>
-          </div>
-        </div>
-      )}
-      {!teaserLoading&&previewAnalysis&&(
-        <div className="strat-wrap" style={{marginBottom:16}}>
-          <div className="strat-hdr">
-            <h3>Strategic Analysis Preview</h3>
-            <p>Follow Wusool on LinkedIn to unlock the full AI-powered analysis</p>
-          </div>
-          <div className="strat-body" style={{paddingBottom:12}}>
-            {/* Visible strength */}
-            {previewAnalysis.visibleStrength&&(
-              <div className="strat-section" style={{marginBottom:12}}>
-                <div className="strat-section-title pros"><span>&#x2714;</span> Key Strength</div>
-                <div className="strat-item pro">
-                  <div className="strat-item-icon">+</div>
-                  <div className="strat-item-text"><strong>{previewAnalysis.visibleStrength.title}</strong>{previewAnalysis.visibleStrength.body}</div>
-                </div>
-              </div>
-            )}
-            {/* Visible risk */}
-            {previewAnalysis.visibleRisk&&(
-              <div className="strat-section" style={{marginBottom:12}}>
-                <div className="strat-section-title cons"><span>&#x26A0;</span> Key Risk</div>
-                <div className="strat-item con">
-                  <div className="strat-item-icon">-</div>
-                  <div className="strat-item-text"><strong>{previewAnalysis.visibleRisk.title}</strong>{previewAnalysis.visibleRisk.body}</div>
-                </div>
-              </div>
-            )}
-            {/* Visible insight */}
-            {previewAnalysis.visibleInsight&&(
-              <div className="strat-section" style={{marginBottom:0}}>
-                <div className="strat-section-title insights"><span>&#x27A4;</span> Strategic Insight</div>
-                <div className="strat-item insight">
-                  <div className="strat-item-icon">&#x2192;</div>
-                  <div className="strat-item-text"><strong>{previewAnalysis.visibleInsight.title}</strong>{previewAnalysis.visibleInsight.body}</div>
-                </div>
-              </div>
-            )}
-            {/* Additional strength + risk + insight (sits under the single outer gate blur) */}
-            <div style={{marginTop:12}}>
-              <div className="strat-section" style={{marginBottom:12}}>
-                <div className="strat-section-title pros"><span>&#x2714;</span> Key Strength</div>
-                <div className="strat-item pro">
-                  <div className="strat-item-icon">+</div>
-                  <div className="strat-item-text"><strong>{previewAnalysis.hiddenStrength.title}</strong>{previewAnalysis.hiddenStrength.body}</div>
-                </div>
-              </div>
-              {previewAnalysis.hiddenRisk&&(
-                <div className="strat-section" style={{marginBottom:12}}>
-                  <div className="strat-section-title cons"><span>&#x26A0;</span> Key Risk</div>
-                  <div className="strat-item con">
-                    <div className="strat-item-icon">-</div>
-                    <div className="strat-item-text"><strong>{previewAnalysis.hiddenRisk.title}</strong>{previewAnalysis.hiddenRisk.body}</div>
-                  </div>
-                </div>
-              )}
-              <div className="strat-section" style={{marginBottom:0}}>
-                <div className="strat-section-title insights"><span>&#x27A4;</span> Strategic Insight</div>
-                <div className="strat-item insight">
-                  <div className="strat-item-icon">&#x2192;</div>
-                  <div className="strat-item-text"><strong>{previewAnalysis.hiddenInsight.title}</strong>{previewAnalysis.hiddenInsight.body}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <StrategicAnalysis gate={gate} cfg={cfg}/>
+      <FundraiseReadiness gate={gate} cfg={cfg}/>
+      <DCFModule gate={gate} cfg={cfg} onUpdate={onUpdate}/>
+      <TradingComps gate={gate} cfg={cfg} onUpdate={onUpdate} aiComps={aiComps}/>
+      <TransactionComps gate={gate} cfg={cfg} onUpdate={onUpdate}/>
+      <IndustryResearch gate={gate} cfg={cfg} onUpdate={onUpdate}/>
     </div>
   );
 }
@@ -2819,44 +2660,18 @@ function ResultsLoadingScreen({gate,compsStatus}){
 // ===== LOCKED PREVIEW (pre-unlock layout) =====
 // Order: Strategic teaser (2 green bullets sharp + rest blurred) -> Valuation hero
 // (big number sharp, table blurred) -> remaining module titles sharp, bodies blurred.
-function LockedPreview({gate,cfg,vd}){
-  const [teaser,setTeaser]=useState(null);
-  const [tLoading,setTLoading]=useState(true);
-
+function LockedPreview({gate,cfg,vd,teaserData}){
   const localPrev=useMemo(()=>(gate&&cfg)?generateStrategicAnalysis(gate,cfg):null,[gate,cfg]);
 
-  useEffect(()=>{
-    if(!gate||!cfg){setTLoading(false);return;}
-    let cancelled=false;
-    (async()=>{
-      setTLoading(true);
-      try{
-        const co=gate.companyName||"The company";
-        const sector=gate.sector||"";
-        const desc=(gate.description||"").substring(0,300);
-        const sys="You are a senior M&A advisor at a top-tier investment bank. Never use em dashes. Write precise, specific, analytical points - never generic statements that could apply to any company.";
-        const usr="Give exactly 4 strengths for this company, specific to its sector and business model. JSON only, no markdown:\n\nCompany: "+co+"\nSector: "+sector+(desc?"\nDescription: "+desc:"")+"\nGeography: "+(gate.geo||"")+"\n\nTitles 8 to 14 words, bold and declarative. Bodies 30 to 45 words. Never use em dashes or ** markdown.\n\nRespond with ONLY valid JSON:\n{\"strengths\":[{\"title\":\"...\",\"body\":\"...\"}]}";
-        const resp=await fetch(RELAY_BASE+"/claude",{
-          method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,messages:[{role:"user",content:usr}],system:sys})
-        });
-        const data=await resp.json();
-        const tb=(data.content||[]).find(b=>b.type==="text");
-        if(tb&&tb.text){
-          const parsed=JSON.parse(tb.text.replace(/```json|```/g,"").trim());
-          const strip=s=>(s||"").replace(/\*\*/g,"");
-          const st=(parsed.strengths||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
-          if(st.length>=2&&!cancelled){setTeaser(st);setTLoading(false);return;}
-        }
-      }catch(e){console.warn("LockedPreview teaser failed, using local fallback:",e);}
-      if(!cancelled)setTLoading(false);
-    })();
-    return()=>{cancelled=true;};
-  },[gate,cfg]);
+  const teaser=teaserData;
+  const tLoading=!teaser;
 
-  const strengths=(teaser&&teaser.length?teaser:(localPrev?localPrev.pros:[]))||[];
+  const strengths=(teaser&&teaser.strengths&&teaser.strengths.length?teaser.strengths:(localPrev?localPrev.pros:[]))||[];
+  const risks=(teaser&&teaser.risks&&teaser.risks.length?teaser.risks:(localPrev?localPrev.cons:[]))||[];
+  const insights=(teaser&&teaser.insights&&teaser.insights.length?teaser.insights:(localPrev?localPrev.insights:[]))||[];
   const greenBullets=strengths.slice(0,2);
-  const blurredBullets=strengths.slice(2,4).length?strengths.slice(2,4):strengths.slice(0,2);
+  const blurredRisk=risks[0];
+  const blurredInsight=insights[0];
 
   const otherSections=[
     {icon:"M",title:"M&A Readiness Scorecard",sub:"Transaction readiness across 6 weighted dimensions"},
@@ -2867,7 +2682,7 @@ function LockedPreview({gate,cfg,vd}){
   ];
 
   return(
-    <div>
+    <div style={{paddingBottom:280}}>
       {/* 1. STRATEGIC ANALYSIS - 2 green bullets sharp, rest blurred */}
       <div className="strat-wrap" style={{marginBottom:16}}>
         <div className="strat-hdr">
@@ -2886,15 +2701,23 @@ function LockedPreview({gate,cfg,vd}){
                 <div className="strat-item-text"><strong>{b.title}</strong><span style={{display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{b.body}</span></div>
               </div>
             ))}
-            {/* Blurred remainder - kept short so the valuation hero stays above the fold */}
-            <div style={{position:"relative",marginTop:6}}>
-              <div style={{filter:"blur(4px)",pointerEvents:"none",userSelect:"none",opacity:0.55,maxHeight:60,overflow:"hidden"}} aria-hidden="true">
-                {blurredBullets.slice(0,1).map((b,i)=>(
-                  <div key={i} className="strat-item pro" style={{marginBottom:8,padding:"10px 12px"}}>
-                    <div className="strat-item-icon">+</div>
-                    <div className="strat-item-text"><strong>{b.title}</strong>{b.body}</div>
+            {/* Blurred remainder - shows the Risks & Challenges and Strategic Insight sections exist */}
+            <div style={{position:"relative",marginTop:14}}>
+              <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6}} aria-hidden="true">
+                <div className="strat-section-title cons" style={{marginBottom:10}}><span>&#x26A0;</span> Risks &amp; Challenges</div>
+                {blurredRisk&&(
+                  <div className="strat-item con" style={{marginBottom:14,padding:"10px 12px"}}>
+                    <div className="strat-item-icon">-</div>
+                    <div className="strat-item-text"><strong>{blurredRisk.title}</strong>{blurredRisk.body}</div>
                   </div>
-                ))}
+                )}
+                <div className="strat-section-title insights" style={{marginBottom:10}}><span>&#x27A4;</span> Strategic Insight</div>
+                {blurredInsight&&(
+                  <div className="strat-item insight" style={{marginBottom:0,padding:"10px 12px"}}>
+                    <div className="strat-item-icon">&#x2192;</div>
+                    <div className="strat-item-text"><strong>{blurredInsight.title}</strong>{blurredInsight.body}</div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -2937,6 +2760,8 @@ function App(){
   const [aiCompsStatus,setAiCompsStatus]=useState("idle");
   const [resultsReady,setResultsReady]=useState(false);
   const [reportUnlocked,setReportUnlocked]=useState(false);
+  const [teaserData,setTeaserData]=useState(null);
+  const [teaserStatus,setTeaserStatus]=useState("idle");
   const [vd,setVd]=useState({
     dcfEV:0,dcfEquity:0,
     trRevLow:0,trRevMid:0,trRevHigh:0,
@@ -2955,6 +2780,47 @@ function App(){
   };
 
   const upd=useCallback(u=>setVd(p=>({...p,...u})),[]);
+
+  // Fetch the strategic teaser in parallel with comps, during the loading screen,
+  // so the preview is fully ready the moment loading ends (no second wait).
+  useEffect(()=>{
+    if(!gated||!gate)return;
+    let cancelled=false;
+    setTeaserStatus("loading");
+    (async()=>{
+      const adjEBITDA=(gate.profitBeforeTax||0)+(gate.ownerSalary||0);
+      const localCfg={revenue:gate.revenue,ebitda:adjEBITDA};
+      const localFallback=()=>{
+        try{
+          const lp=generateStrategicAnalysis(gate,localCfg);
+          return{strengths:lp.pros||[],risks:lp.cons||[],insights:lp.insights||[]};
+        }catch(e){return{strengths:[],risks:[],insights:[]};}
+      };
+      try{
+        const co=gate.companyName||"The company";
+        const sector=gate.sector||"";
+        const desc=(gate.description||"").substring(0,300);
+        const sys="You are a senior M&A advisor at a top-tier investment bank. Never use em dashes. Write precise, specific, analytical points - never generic statements that could apply to any company.";
+        const usr="Give exactly 2 strengths, 1 risk/challenge, and 1 strategic insight for this company, specific to its sector and business model. JSON only, no markdown:\n\nCompany: "+co+"\nSector: "+sector+(desc?"\nDescription: "+desc:"")+"\nGeography: "+(gate.geo||"")+"\n\nTitles 8 to 14 words, bold and declarative. Bodies 30 to 45 words. Never use em dashes or ** markdown.\n\nRespond with ONLY valid JSON:\n{\"strengths\":[{\"title\":\"...\",\"body\":\"...\"}],\"risks\":[{\"title\":\"...\",\"body\":\"...\"}],\"insights\":[{\"title\":\"...\",\"body\":\"...\"}]}";
+        const resp=await fetch(RELAY_BASE+"/claude",{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:900,messages:[{role:"user",content:usr}],system:sys})
+        });
+        const data=await resp.json();
+        const tb=(data.content||[]).find(b=>b.type==="text");
+        if(tb&&tb.text){
+          const parsed=JSON.parse(tb.text.replace(/```json|```/g,"").trim());
+          const strip=s=>(s||"").replace(/\*\*/g,"");
+          const st=(parsed.strengths||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
+          const rk=(parsed.risks||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
+          const ins=(parsed.insights||[]).map(x=>({title:strip(x.title),body:strip(x.body)}));
+          if(st.length>=2&&!cancelled){setTeaserData({strengths:st,risks:rk,insights:ins});setTeaserStatus("done");return;}
+        }
+      }catch(e){console.warn("Teaser fetch failed, using local fallback:",e);}
+      if(!cancelled){setTeaserData(localFallback());setTeaserStatus("done");}
+    })();
+    return()=>{cancelled=true;};
+  },[gated,gate]);
 
   // Push to Attio once results are ready — blended valuation is fully computed by then
   const attioPushedRef=useRef(false);
@@ -2979,7 +2845,24 @@ function App(){
     pushLeadToAttio(gate,cfg,blendedData);
   },[resultsReady,gate,cfg,vd]);
 
-  // Wait for AI comps to finish + minimum display time, then reveal results
+  // Failsafe: never let a hung teaser fetch block the results reveal.
+  useEffect(()=>{
+    if(!gated)return;
+    const failsafe=setTimeout(()=>{
+      setTeaserStatus(s=>s==="done"?s:"done");
+      setTeaserData(d=>{
+        if(d)return d;
+        try{
+          const adjEBITDA=(gate.profitBeforeTax||0)+(gate.ownerSalary||0);
+          const lp=generateStrategicAnalysis(gate,{revenue:gate.revenue,ebitda:adjEBITDA});
+          return{strengths:lp.pros||[],risks:lp.cons||[],insights:lp.insights||[]};
+        }catch(e){return{strengths:[],risks:[],insights:[]};}
+      });
+    },12000);
+    return()=>clearTimeout(failsafe);
+  },[gated,gate]);
+
+
   const gateTimeRef=useRef(null);
   useEffect(()=>{
     if(gated&&!gateTimeRef.current)gateTimeRef.current=Date.now();
@@ -2988,13 +2871,14 @@ function App(){
   useEffect(()=>{
     if(!gated)return;
     const compsFinished=aiCompsStatus==="done"||aiCompsStatus==="fallback";
-    if(!compsFinished)return;
+    const teaserFinished=teaserStatus==="done";
+    if(!compsFinished||!teaserFinished)return;
     // Ensure minimum 10s loading display so all animation steps tick to done before reveal
     const elapsed=Date.now()-(gateTimeRef.current||Date.now());
     const minDelay=Math.max(10000-elapsed,1000);
     const timer=setTimeout(()=>setResultsReady(true),minDelay);
     return()=>clearTimeout(timer);
-  },[gated,aiCompsStatus]);
+  },[gated,aiCompsStatus,teaserStatus]);
 
   // Pre-compute initial valuation estimates so summary is stable before LinkedIn unlock
   useEffect(()=>{
@@ -3168,15 +3052,15 @@ function App(){
             </div>
           </div>
         ):(
-        <div style={{position:"relative",marginTop:8,minHeight:400}}>
-          <LockedPreview gate={gate} cfg={cfg} vd={vd}/>
-          <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,display:"flex",alignItems:"flex-start",justifyContent:"center",zIndex:2,pointerEvents:"none"}}>
-            <div style={{position:"sticky",top:"60vh",background:"#fff",border:"1px solid #e8e8e8",borderRadius:8,padding:"32px 40px",maxWidth:460,width:"100%",boxShadow:"0 12px 48px rgba(0,9,54,0.20)",textAlign:"center",pointerEvents:"auto"}}>
-              <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#f0fff8",border:"1px solid rgba(22,218,128,0.4)",borderRadius:8,padding:"4px 12px",fontSize:11,fontWeight:700,color:"#007a50",marginBottom:18,textTransform:"uppercase",letterSpacing:"0.5px"}}>Full Report Ready</div>
-              <h2 style={{fontSize:22,fontWeight:800,color:"#000523",marginBottom:10,letterSpacing:"-0.3px",lineHeight:1.3}}>Get Your Free Valuation Report Now</h2>
-              <p style={{fontSize:14,color:"#888",lineHeight:1.6,marginBottom:24}}>Your {gate.sector} business in {gate.geo} has been valued across multiple methods. Get your full report now and our team will walk you through the complete analysis.</p>
+        <div style={{position:"relative",marginTop:8}}>
+          <LockedPreview gate={gate} cfg={cfg} vd={vd} teaserData={teaserData}/>
+          <div style={{position:"fixed",left:0,right:0,bottom:0,display:"flex",justifyContent:"center",zIndex:50,pointerEvents:"none",padding:"0 16px 24px"}}>
+            <div style={{background:"#fff",border:"1px solid #e8e8e8",borderRadius:12,padding:"24px 32px",maxWidth:480,width:"100%",boxShadow:"0 -4px 24px rgba(0,9,54,0.10), 0 16px 48px rgba(0,9,54,0.22)",textAlign:"center",pointerEvents:"auto"}}>
+              <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#f0fff8",border:"1px solid rgba(22,218,128,0.4)",borderRadius:8,padding:"4px 12px",fontSize:11,fontWeight:700,color:"#007a50",marginBottom:14,textTransform:"uppercase",letterSpacing:"0.5px"}}>Full Report Ready</div>
+              <h2 style={{fontSize:20,fontWeight:800,color:"#000523",marginBottom:8,letterSpacing:"-0.3px",lineHeight:1.25}}>Get Your Free Valuation Report Now</h2>
+              <p style={{fontSize:13,color:"#888",lineHeight:1.5,marginBottom:18}}>Your {gate.sector} business in {gate.geo} has been valued across multiple methods. Get your full report and our team will walk you through the complete analysis.</p>
               <a href="https://calendar.app.google/UfXxu6dBkZ8wjhnT6" target="_blank" rel="noopener noreferrer" onClick={()=>setReportUnlocked(true)} style={{display:"block",width:"100%",padding:"14px",background:"#000523",color:"#fff",borderRadius:8,fontSize:15,fontWeight:700,cursor:"pointer",textDecoration:"none",fontFamily:"Inter,sans-serif",boxSizing:"border-box"}}>Get Your Free Valuation Report Now →</a>
-              <div style={{fontSize:11,color:"#aaa",marginTop:10}}>Free · No commitment · Response within 24 hours</div>
+              <div style={{fontSize:11,color:"#aaa",marginTop:9}}>Free · No commitment · Response within 24 hours</div>
             </div>
           </div>
         </div>
