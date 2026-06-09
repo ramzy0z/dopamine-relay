@@ -2701,24 +2701,26 @@ function LockedPreview({gate,cfg,vd,teaserData}){
                 <div className="strat-item-text"><strong>{b.title}</strong><span style={{display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{b.body}</span></div>
               </div>
             ))}
-            {/* Blurred remainder - shows the Risks & Challenges and Strategic Insight sections exist */}
-            <div style={{position:"relative",marginTop:14}}>
-              <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6}} aria-hidden="true">
-                <div className="strat-section-title cons" style={{marginBottom:10}}><span>&#x26A0;</span> Risks &amp; Challenges</div>
-                {blurredRisk&&(
-                  <div className="strat-item con" style={{marginBottom:14,padding:"10px 12px"}}>
+            {/* Remainder - subheaders sharp like Key Strengths, only the bullets blurred */}
+            <div style={{marginTop:14}}>
+              <div className="strat-section-title cons" style={{marginBottom:10}}><span>&#x26A0;</span> Risks &amp; Challenges</div>
+              {blurredRisk&&(
+                <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6,marginBottom:14}} aria-hidden="true">
+                  <div className="strat-item con" style={{marginBottom:0,padding:"10px 12px"}}>
                     <div className="strat-item-icon">-</div>
                     <div className="strat-item-text"><strong>{blurredRisk.title}</strong>{blurredRisk.body}</div>
                   </div>
-                )}
-                <div className="strat-section-title insights" style={{marginBottom:10}}><span>&#x27A4;</span> Strategic Insight</div>
-                {blurredInsight&&(
+                </div>
+              )}
+              <div className="strat-section-title insights" style={{marginBottom:10}}><span>&#x27A4;</span> Strategic Insight</div>
+              {blurredInsight&&(
+                <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6}} aria-hidden="true">
                   <div className="strat-item insight" style={{marginBottom:0,padding:"10px 12px"}}>
                     <div className="strat-item-icon">&#x2192;</div>
                     <div className="strat-item-text"><strong>{blurredInsight.title}</strong>{blurredInsight.body}</div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
           )}
