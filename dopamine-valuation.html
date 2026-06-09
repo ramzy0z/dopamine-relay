@@ -2063,12 +2063,12 @@ function InputsCard({gate,cfg}){
 function LinkedInGateV2({gate,cfg,aiComps,onUpdate,vd,unlocked}){
   return(
     <div>
-      <StrategicAnalysis gate={gate} cfg={cfg}/>
-      <FundraiseReadiness gate={gate} cfg={cfg}/>
-      <DCFModule gate={gate} cfg={cfg} onUpdate={onUpdate}/>
-      <TradingComps gate={gate} cfg={cfg} onUpdate={onUpdate} aiComps={aiComps}/>
-      <TransactionComps gate={gate} cfg={cfg} onUpdate={onUpdate}/>
-      <IndustryResearch gate={gate} cfg={cfg} onUpdate={onUpdate}/>
+      <div data-scroll-stop><StrategicAnalysis gate={gate} cfg={cfg}/></div>
+      <div data-scroll-stop><FundraiseReadiness gate={gate} cfg={cfg}/></div>
+      <div data-scroll-stop><DCFModule gate={gate} cfg={cfg} onUpdate={onUpdate}/></div>
+      <div data-scroll-stop><TradingComps gate={gate} cfg={cfg} onUpdate={onUpdate} aiComps={aiComps}/></div>
+      <div data-scroll-stop><TransactionComps gate={gate} cfg={cfg} onUpdate={onUpdate}/></div>
+      <div data-scroll-stop><IndustryResearch gate={gate} cfg={cfg} onUpdate={onUpdate}/></div>
     </div>
   );
 }
@@ -3095,12 +3095,13 @@ function App(){
           </div>
         </div>
         {reportUnlocked?(
-          <div>
-            <ValuationSummary gate={gate} cfg={cfg} vd={vd} unlocked={true}/>
+          <div style={{position:"relative"}}>
+            <div data-scroll-stop><ValuationSummary gate={gate} cfg={cfg} vd={vd} unlocked={true}/></div>
             <div style={{marginTop:24}}>
               <InputsCard gate={gate} cfg={cfg}/>
               <LinkedInGateV2 gate={gate} cfg={cfg} aiComps={aiComps} onUpdate={upd} vd={vd} unlocked={true}/>
             </div>
+            <ScrollHint/>
           </div>
         ):(
         <div style={{position:"relative",marginTop:8}}>
