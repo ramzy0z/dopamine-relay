@@ -55,8 +55,16 @@ textarea.fi{resize:vertical;min-height:64px;transition:height 0.4s ease,border-c
 
 /* ── RESULTS LAYOUT ── */
 .app-wrap{display:flex;min-height:calc(100vh - 65px)}
-.main{flex:1;padding:40px 40px 80px;max-width:980px;margin:0 auto;width:100%}
-.page-hdr{margin-bottom:32px;padding-bottom:24px;border-bottom:1px solid #f0f0f0}
+.main{flex:1;padding:24px 40px 80px;max-width:980px;margin:0 auto;width:100%}
+.page-hdr{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid #f0f0f0}
+.scroll-hint{position:fixed;right:22px;top:50%;transform:translateY(-50%);z-index:40;display:flex;flex-direction:column;align-items:center;gap:10px;transition:opacity 0.35s ease;cursor:pointer;background:none;border:none;font-family:'Inter',sans-serif}
+.scroll-hint .sh-label{writing-mode:vertical-rl;text-orientation:mixed;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#000523;opacity:0.55}
+.scroll-hint .sh-track{width:2px;height:54px;background:#dfe3ec;border-radius:2px;position:relative;overflow:hidden}
+.scroll-hint .sh-fill{position:absolute;top:0;left:0;right:0;height:40%;background:#000523;border-radius:2px;animation:shSlide 1.8s ease-in-out infinite}
+.scroll-hint .sh-chev{width:30px;height:30px;border-radius:50%;background:#000523;color:#fff;display:flex;align-items:center;justify-content:center;animation:shBounce 1.8s ease-in-out infinite;box-shadow:0 4px 12px rgba(0,9,54,0.25)}
+@keyframes shSlide{0%{top:-40%}100%{top:100%}}
+@keyframes shBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(4px)}}
+@media(max-width:760px){.scroll-hint{right:12px}.scroll-hint .sh-label{display:none}}
 .page-hdr h1{font-size:24px;font-weight:800;color:var(--bb);letter-spacing:-0.5px}
 .page-hdr p{font-size:13px;color:var(--gg);margin-top:6px}
 
@@ -2689,33 +2697,33 @@ function LockedPreview({gate,cfg,vd,teaserData}){
           <h3>Strategic Analysis</h3>
           <p>AI-powered assessment of {gate.companyName||"your business"}</p>
         </div>
-        <div className="strat-body">
+        <div className="strat-body" style={{padding:"16px 20px"}}>
           {tLoading?(
             <div className="ai-loader-status" style={{padding:"12px 0"}}>Analyzing {gate.companyName||"company"}&apos;s strategic position<span className="ai-loader-dots"><span>.</span><span>.</span><span>.</span></span></div>
           ):(
           <div>
-            <div className="strat-section-title pros" style={{marginBottom:10}}><span>&#x2714;</span> Key Strengths</div>
+            <div className="strat-section-title pros" style={{marginBottom:8}}><span>&#x2714;</span> Key Strengths</div>
             {greenBullets.map((b,i)=>(
-              <div key={i} className="strat-item pro" style={{marginBottom:8,padding:"10px 12px"}}>
+              <div key={i} className="strat-item pro" style={{marginBottom:7,padding:"9px 12px"}}>
                 <div className="strat-item-icon">+</div>
                 <div className="strat-item-text"><strong>{b.title}</strong><span style={{display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{b.body}</span></div>
               </div>
             ))}
-            {/* Remainder - subheaders sharp like Key Strengths, only the bullets blurred */}
-            <div style={{marginTop:14}}>
-              <div className="strat-section-title cons" style={{marginBottom:10}}><span>&#x26A0;</span> Risks &amp; Challenges</div>
+            {/* Remainder - subheaders sharp like Key Strengths, only the bullets blurred and clamped short */}
+            <div style={{marginTop:10}}>
+              <div className="strat-section-title cons" style={{marginBottom:7}}><span>&#x26A0;</span> Risks &amp; Challenges</div>
               {blurredRisk&&(
-                <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6,marginBottom:14}} aria-hidden="true">
-                  <div className="strat-item con" style={{marginBottom:0,padding:"10px 12px"}}>
+                <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6,marginBottom:10,maxHeight:38,overflow:"hidden"}} aria-hidden="true">
+                  <div className="strat-item con" style={{marginBottom:0,padding:"9px 12px"}}>
                     <div className="strat-item-icon">-</div>
                     <div className="strat-item-text"><strong>{blurredRisk.title}</strong>{blurredRisk.body}</div>
                   </div>
                 </div>
               )}
-              <div className="strat-section-title insights" style={{marginBottom:10}}><span>&#x27A4;</span> Strategic Insight</div>
+              <div className="strat-section-title insights" style={{marginBottom:7}}><span>&#x27A4;</span> Strategic Insight</div>
               {blurredInsight&&(
-                <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6}} aria-hidden="true">
-                  <div className="strat-item insight" style={{marginBottom:0,padding:"10px 12px"}}>
+                <div style={{filter:"blur(4.5px)",pointerEvents:"none",userSelect:"none",opacity:0.6,maxHeight:38,overflow:"hidden"}} aria-hidden="true">
+                  <div className="strat-item insight" style={{marginBottom:0,padding:"9px 12px"}}>
                     <div className="strat-item-icon">&#x2192;</div>
                     <div className="strat-item-text"><strong>{blurredInsight.title}</strong>{blurredInsight.body}</div>
                   </div>
@@ -2728,7 +2736,9 @@ function LockedPreview({gate,cfg,vd,teaserData}){
       </div>
 
       {/* 2. VALUATION HERO - big number sharp, breakdown table blurred */}
-      <ValuationSummary gate={gate} cfg={cfg} vd={vd} unlocked={false}/>
+      <div id="locked-valuation-hero">
+        <ValuationSummary gate={gate} cfg={cfg} vd={vd} unlocked={false}/>
+      </div>
 
       {/* 3. REMAINING MODULES - titles sharp, bodies blurred */}
       <div style={{marginTop:16}}>
@@ -2749,6 +2759,31 @@ function LockedPreview({gate,cfg,vd,teaserData}){
         ))}
       </div>
     </div>
+  );
+}
+
+
+// ===== SCROLL HINT (minimalist jump-to-hero indicator) =====
+function ScrollHint(){
+  const [hidden,setHidden]=useState(false);
+  useEffect(()=>{
+    const onScroll=()=>setHidden(window.scrollY>120);
+    window.addEventListener("scroll",onScroll,{passive:true});
+    return()=>window.removeEventListener("scroll",onScroll);
+  },[]);
+  const jump=()=>{
+    const el=document.getElementById("locked-valuation-hero");
+    if(el)el.scrollIntoView({behavior:"smooth",block:"start"});
+    else window.scrollBy({top:window.innerHeight*0.6,behavior:"smooth"});
+  };
+  return(
+    <button className="scroll-hint" onClick={jump} aria-label="Scroll to valuation" style={{opacity:hidden?0:1,pointerEvents:hidden?"none":"auto"}}>
+      <span className="sh-label">Scroll</span>
+      <span className="sh-track"><span className="sh-fill"/></span>
+      <span className="sh-chev">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </span>
+    </button>
   );
 }
 
@@ -3056,6 +3091,7 @@ function App(){
         ):(
         <div style={{position:"relative",marginTop:8}}>
           <LockedPreview gate={gate} cfg={cfg} vd={vd} teaserData={teaserData}/>
+          <ScrollHint/>
           <div style={{position:"fixed",left:0,right:0,bottom:0,display:"flex",justifyContent:"center",zIndex:50,pointerEvents:"none",padding:"0 16px 24px"}}>
             <div style={{background:"#fff",border:"1px solid #e8e8e8",borderRadius:12,padding:"24px 32px",maxWidth:480,width:"100%",boxShadow:"0 -4px 24px rgba(0,9,54,0.10), 0 16px 48px rgba(0,9,54,0.22)",textAlign:"center",pointerEvents:"auto"}}>
               <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#f0fff8",border:"1px solid rgba(22,218,128,0.4)",borderRadius:8,padding:"4px 12px",fontSize:11,fontWeight:700,color:"#007a50",marginBottom:14,textTransform:"uppercase",letterSpacing:"0.5px"}}>Full Report Ready</div>
