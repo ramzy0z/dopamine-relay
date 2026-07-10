@@ -1375,26 +1375,36 @@ function Gate({onSubmit,apiKey,setApiKey}){
     let claudeDesc="";
     let claudeSector="";
     try{
-      const systemPrompt="You are a senior investment analyst at an M&A advisory firm. You produce institutional-quality company descriptions. You never use em dashes. You write in a professional, precise tone suitable for investor presentations.";
-      const userPrompt="Analyze this company and provide TWO things in JSON format only (no markdown, no backticks, no preamble):\n\nCompany name: "+coName+"\nDomain: "+clean+"\n"+(websiteText?"Website content: "+websiteText.substring(0,1500)+"\n":"")+(wikiText?"Wikipedia: "+wikiText.substring(0,600)+"\n":"")+"\n1. \"description\": Write a 25 to 40 word professional company description. You MUST stay within 25 to 40 words, no exceptions. It should be suitable for an investor deck. Focus on what the company does, its core value proposition, target market, and business model. Do not use marketing language, CTAs, or em dashes. Write in third person. Be specific and factual.\n\n2. \"sector\": Select the SINGLE most accurate sector from this list: ["+sectorList+"]. Return ONLY one sector name exactly as written in the list.\n\nRespond with ONLY valid JSON: {\"description\":\"...\",\"sector\":\"...\"}";
+      const systemPrompt="You are a senior investment analyst at an M&A advisory firm. You produce institutional-quality company descriptions. You never use em dashes. You write in a professional, precise tone suitable for investor presentations. You have access to web search: always search for the company's actual website and recent information before writing anything. Never infer what a company does from its name alone, since company names are often generic words, dictionary terms, or unrelated to the actual business.";
+      const userPrompt="Research this company using web search, then provide TWO things in JSON format only (no markdown, no backticks, no preamble):\n\nCompany name: "+coName+"\nDomain: "+clean+"\n\nFIRST, use web search to find and read the company's actual website ("+clean+") and any recent, reliable information about what this specific business does. Base your answer strictly on what you find about the real operating company at this domain. Do NOT guess from the company name, and do NOT rely on the dictionary or linguistic meaning of the name.\n\nThen provide:\n1. \"description\": A 25 to 40 word professional company description, third person, suitable for an investor deck. Focus on what the company actually does, its value proposition, target market, and business model. No marketing language, no CTAs, no em dashes. Stay within 25 to 40 words.\n\n2. \"sector\": Select the SINGLE most accurate sector from this list: ["+sectorList+"]. Return ONLY one sector name exactly as written in the list.\n\nIf, after searching, you cannot find reliable information about what the real business at this domain does, set description to an empty string and sector to an empty string rather than guessing.\n\nRespond with ONLY valid JSON: {\"description\":\"...\",\"sector\":\"...\"}";
 
       const resp=await fetch(RELAY_BASE+"/claude",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           model:"claude-sonnet-5",
-          max_tokens:1000,
+          max_tokens:3000,
           messages:[{role:"user",content:userPrompt}],
-          system:systemPrompt
+          system:systemPrompt,
+          tools:[{type:"web_search_20260209",name:"web_search",max_uses:4}]
         })
       });
       const data=await resp.json();
-      const textBlock=(data.content||[]).find(b=>b.type==="text");
-      if(textBlock&&textBlock.text){
-        const cleanJson=textBlock.text.replace(/```json|```/g,"").trim();
-        const parsed=JSON.parse(cleanJson);
-        if(parsed.description&&parsed.description.length>20) claudeDesc=parsed.description;
-        if(parsed.sector&&ALL_SECTORS.includes(parsed.sector)) claudeSector=parsed.sector;
+      // With web search enabled the response contains multiple blocks (Claude's
+      // search narration, tool results, then the final answer). The JSON we want
+      // is in a text block, usually the last one. Scan ALL text blocks for valid
+      // JSON rather than taking the first, which may be search commentary.
+      const textBlocks=(data.content||[]).filter(b=>b.type==="text"&&b.text).map(b=>b.text);
+      for(let i=textBlocks.length-1;i>=0;i--){
+        const cleanJson=textBlocks[i].replace(/```json|```/g,"").trim();
+        const m=cleanJson.match(/\{[\s\S]*\}/);
+        if(!m)continue;
+        try{
+          const parsed=JSON.parse(m[0]);
+          if(parsed.description&&parsed.description.length>20) claudeDesc=parsed.description;
+          if(parsed.sector&&ALL_SECTORS.includes(parsed.sector)) claudeSector=parsed.sector;
+          if(claudeDesc||claudeSector)break;
+        }catch(e){}
       }
     }catch(e){
       console.warn("Claude API enrichment failed, falling back to local:",e);
@@ -2598,24 +2608,28 @@ function DynamicCompsLoader({gate,onCompsReady,onStatusChange}){
         const sector=gate.sector||"";
         const websiteText=gate.websiteText||"";
 
-        const systemPrompt="You are a senior equity research analyst. You select the most relevant public company comparables for valuation analysis. Be precise with financial data. Never use em dashes.";
-        const userPrompt="Select the 8 most relevant public company comparables for this company. These should be companies that an investment banker would use in a trading comps analysis:\n\nCompany: "+co+"\nSector: "+sector+"\nDescription: "+desc+"\n"+(websiteText?"Website: "+websiteText.substring(0,800)+"\n":"")+"\nFor each comparable, provide: company name, ticker symbol, approximate enterprise value ($M), approximate annual revenue ($M), and approximate EBITDA ($M). Use your best knowledge of current public market data.\n\nInclude a mix of:\n- Direct competitors or peers\n- Companies with similar business models in adjacent sectors\n- Regional comparables if relevant (especially MENA-listed companies if the target is in the Middle East)\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{\"comps\":[{\"co\":\"Company Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}]}";
+        const systemPrompt="You are a senior equity research analyst. You select the most relevant public company comparables for valuation analysis. Be precise with financial data. Never use em dashes. You have access to web search: use it to verify what the target company does and to find accurate, current enterprise value, revenue, and EBITDA figures for the comparables you choose. Do not rely on memory for financial figures.";
+        const userPrompt="Research this company and select the 8 most relevant public company comparables an investment banker would use in a trading comps analysis:\n\nCompany: "+co+"\nSector: "+sector+"\nDescription: "+desc+"\n"+(websiteText?"Website: "+websiteText.substring(0,800)+"\n":"")+"\nUse web search first to confirm what the target actually does, then choose comparables that genuinely match its business model, and look up approximate current EV ($M), annual revenue ($M), and EBITDA ($M) for each. Prefer comparables of a broadly relevant scale where possible.\n\nInclude a mix of:\n- Direct competitors or peers\n- Companies with similar business models in adjacent sectors\n- Regional comparables if relevant (especially MENA-listed companies if the target is in the Middle East)\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{\"comps\":[{\"co\":\"Company Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}]}";
 
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
+          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:4000,messages:[{role:"user",content:userPrompt}],system:systemPrompt,tools:[{type:"web_search_20260209",name:"web_search",max_uses:6}]})
         });
         const data=await resp.json();
-        const textBlock=(data.content||[]).find(b=>b.type==="text");
-        if(textBlock&&textBlock.text){
-          const parsed=JSON.parse(textBlock.text.replace(/```json|```/g,"").trim());
-          if(parsed.comps&&parsed.comps.length>=3){
-            onCompsReady(parsed.comps);
-            setStatus("done");
-            if(onStatusChange)onStatusChange("done");
-            return;
-          }
+        const textBlocks=(data.content||[]).filter(b=>b.type==="text"&&b.text).map(b=>b.text);
+        for(let i=textBlocks.length-1;i>=0;i--){
+          const m=textBlocks[i].replace(/```json|```/g,"").trim().match(/\{[\s\S]*\}/);
+          if(!m)continue;
+          try{
+            const parsed=JSON.parse(m[0]);
+            if(parsed.comps&&parsed.comps.length>=3){
+              onCompsReady(parsed.comps);
+              setStatus("done");
+              if(onStatusChange)onStatusChange("done");
+              return;
+            }
+          }catch(e){}
         }
       }catch(e){
         console.warn("Dynamic comps failed:",e);
