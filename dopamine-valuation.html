@@ -343,7 +343,7 @@ async function callClaude(apiKey, systemPrompt, userPrompt, maxTokens=1000){
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        model:"claude-sonnet-4-6",
+        model:"claude-sonnet-5",
         max_tokens:maxTokens,
         system:systemPrompt,
         messages:[{role:"user",content:userPrompt}]
@@ -1382,7 +1382,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-6",
+          model:"claude-sonnet-5",
           max_tokens:1000,
           messages:[{role:"user",content:userPrompt}],
           system:systemPrompt
@@ -1809,7 +1809,7 @@ function TradingComps({gate,cfg,onUpdate,aiComps}){
       {open&&<div className="mod-body">
         <div style={{fontSize:12,color:"var(--gg)",marginBottom:12}}>Public comparables for <strong>{gate?gate.sector:""}</strong>. Figures in $M.</div>
         {negEbitda&&<div style={{background:"rgba(240,48,84,0.07)",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"var(--sp)",fontWeight:600}}>Negative EBITDA: +20% surcharge applied</div>}
-        {sizeInfo.flag&&<div style={{background:"#FEF3C7",border:"1px solid #FCD34D",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"#92400E",fontWeight:600}}>Size caution: the median comparable is roughly {sizeInfo.ratio>=1000?Math.round(sizeInfo.ratio/1000)+",000":Math.round(sizeInfo.ratio)+"x"} larger than this company by revenue. Public multiples do not translate directly to a business this size. An additional {sizeInfo.sizeDisc}% size discount has been applied on top of the illiquidity discount. Treat these multiples as directional only.</div>}
+
         <div className="scroll-table">
         <table className="dt"><thead><tr><th>Company</th><th>Ticker</th><th>EV ($M)</th><th>Rev ($M)</th><th>EBITDA ($M)</th><th>EV/Rev</th><th>EV/EBITDA</th><th></th></tr></thead>
         <tbody>{comps.map((c,i)=>{
@@ -2258,7 +2258,7 @@ function StrategicAnalysis({gate,cfg}){
           method:"POST",
           headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
-            model:"claude-sonnet-4-6",
+            model:"claude-sonnet-5",
             max_tokens:2000,
             messages:[{role:"user",content:userPrompt}],
             system:systemPrompt
@@ -2427,7 +2427,7 @@ function FundraiseReadiness({gate,cfg}){
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
+          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
         });
         const data=await resp.json();
         const textBlock=(data.content||[]).find(b=>b.type==="text");
@@ -2604,7 +2604,7 @@ function DynamicCompsLoader({gate,onCompsReady,onStatusChange}){
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
+          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
         });
         const data=await resp.json();
         const textBlock=(data.content||[]).find(b=>b.type==="text");
@@ -2882,7 +2882,7 @@ function App(){
         const usr="Give exactly 2 strengths, 1 risk/challenge, and 1 strategic insight for this company, specific to its sector and business model. JSON only, no markdown:\n\nCompany: "+co+"\nSector: "+sector+(desc?"\nDescription: "+desc:"")+"\nGeography: "+(gate.geo||"")+"\n\nTitles 8 to 14 words, bold and declarative. Bodies 30 to 45 words. Never use em dashes or ** markdown.\n\nRespond with ONLY valid JSON:\n{\"strengths\":[{\"title\":\"...\",\"body\":\"...\"}],\"risks\":[{\"title\":\"...\",\"body\":\"...\"}],\"insights\":[{\"title\":\"...\",\"body\":\"...\"}]}";
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:900,messages:[{role:"user",content:usr}],system:sys})
+          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:900,messages:[{role:"user",content:usr}],system:sys})
         });
         const data=await resp.json();
         const tb=(data.content||[]).find(b=>b.type==="text");
