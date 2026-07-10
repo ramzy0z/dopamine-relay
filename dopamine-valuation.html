@@ -343,7 +343,7 @@ async function callClaude(apiKey, systemPrompt, userPrompt, maxTokens=1000){
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        model:"claude-sonnet-4-20250514",
+        model:"claude-sonnet-4-6",
         max_tokens:maxTokens,
         system:systemPrompt,
         messages:[{role:"user",content:userPrompt}]
@@ -1248,6 +1248,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
   const [enriched,setEnriched]=useState(false);
   const [descAutoFilled,setDescAutoFilled]=useState(false);
   const [sectorAutoFilled,setSectorAutoFilled]=useState(false);
+  const [enrichFailed,setEnrichFailed]=useState(false);
   const descRef=useRef(null);
 
   // Auto-grow textarea whenever description changes
@@ -1299,6 +1300,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
     const clean=domain.replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0].trim().toLowerCase();
     if(!clean||clean.length<3)return;
     setEnriching(true);
+    setEnrichFailed(false);
     let companyDetected="";
     let websiteText="";
 
@@ -1380,7 +1382,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514",
+          model:"claude-sonnet-4-6",
           max_tokens:1000,
           messages:[{role:"user",content:userPrompt}],
           system:systemPrompt
@@ -1399,24 +1401,21 @@ function Gate({onSubmit,apiKey,setApiKey}){
     }
 
     const cleanDomain=clean.replace(/\.[a-z]{2,6}$/i,"").replace(/[-_.]/g," ");
-    if(!claudeDesc){
-      const fallbackSector=(claudeSector||detectSectorFromText(websiteText+" "+wikiText+" "+cleanDomain)||"technology").toLowerCase();
-      claudeDesc=coName+" is a "+fallbackSector+" company providing products and services to its target market. The business operates in the "+fallbackSector+" space with a focus on delivering value to its customers.";
-    }
-    if(!claudeSector){
-      claudeSector=detectSectorFromText(websiteText+" "+wikiText+" "+cleanDomain)||"Technology";
-    }
+    // AI enrichment succeeded only if we got a real description back from Claude.
+    // If it failed, do NOT invent a generic description; flag it so the user fills it in.
+    const aiSucceeded=!!claudeDesc;
 
     setF(p=>({
       ...p,
-      description:claudeDesc,
-      sector:claudeSector,
+      description:claudeDesc||"",
+      sector:aiSucceeded?claudeSector:"",
       websiteText:websiteText,
       wikiText:wikiText
     }));
     setTimeout(()=>{
-      setDescAutoFilled(true);
-      setSectorAutoFilled(true);
+      setDescAutoFilled(aiSucceeded);
+      setSectorAutoFilled(aiSucceeded);
+      setEnrichFailed(!aiSucceeded);
       setEnriched(true);
     },0);
     setEnriching(false);
@@ -1475,6 +1474,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
               <Tip text="A concise description helps us select the most relevant comparable companies and benchmarks."/>
             </label>
             <textarea ref={descRef} className={"fi"+(descAutoFilled&&f.description?" enriched":"")} name="description" value={f.description} onChange={ch} placeholder="e.g. We build AI-powered supply chain software for mid-market manufacturers" style={{minHeight:64,overflow:"hidden",resize:"none"}}/>
+            {enrichFailed&&<div className="fh" style={{color:"#B45309",background:"#FEF3C7",border:"1px solid #FCD34D",borderRadius:8,padding:"8px 10px",marginTop:6}}>We could not auto-detect this company. Please write a short description and select the sector manually so we can match the right comparables.</div>}
           </div>
           <div className="row2" style={{gridTemplateColumns:"1fr 1fr"}}>
             <div className="fg" style={{minWidth:0}}>
@@ -1756,16 +1756,42 @@ function TradingComps({gate,cfg,onUpdate,aiComps}){
 
   const negEbitda=(cfg.ebitda||0)<0;
 
+  // Target revenue in $M, to compare against comps (which are in $M).
+  const targetRevM=(cfg.revenue||0)/1e6;
+
+  // Size discipline: public comps are typically orders of magnitude larger than
+  // an SME. A $3M-revenue business does not trade at Duolingo's multiple. We
+  // (a) flag when the median comp dwarfs the target, and (b) apply an additional
+  // size discount that scales with how far the target sits below the comp set.
+  const sizeInfo=useMemo(()=>{
+    const valid=comps.filter(c=>c.rev>0);
+    if(!valid.length||targetRevM<=0)return{ratio:0,sizeDisc:0,flag:false};
+    const revs=valid.map(c=>c.rev).sort((a,b)=>a-b);
+    const medComp=revs[Math.floor(revs.length/2)];
+    const ratio=medComp/targetRevM; // how many times larger the median comp is
+    // Size discount tiers (applied on top of the user's liquidity/haircut discount)
+    let sizeDisc=0;
+    if(ratio>=1000)sizeDisc=40;
+    else if(ratio>=250)sizeDisc=30;
+    else if(ratio>=50)sizeDisc=20;
+    else if(ratio>=10)sizeDisc=10;
+    return{ratio,sizeDisc,flag:ratio>=50};
+  },[comps,targetRevM]);
+
   const calc=useMemo(()=>{
     const valid=comps.filter(c=>c.rev>0);
     const revM=valid.map(c=>c.ev/c.rev);
     const ebM=valid.filter(c=>c.ebitda>0).map(c=>c.ev/c.ebitda);
     const rS=getStats(revM),eS=getStats(ebM);
-    const adjDRev=negEbitda?Math.min(dRev+20,100):dRev;
-    const adjDEb=negEbitda?Math.min(dEb+20,100):dEb;
-    const disc=1-adjDRev/100,discEb=1-adjDEb/100;
+    // Combine user haircut, negative-EBITDA penalty, and size discount multiplicatively.
+    const baseDRev=negEbitda?Math.min(dRev+20,100):dRev;
+    const baseDEb=negEbitda?Math.min(dEb+20,100):dEb;
+    const disc=(1-baseDRev/100)*(1-sizeInfo.sizeDisc/100);
+    const discEb=(1-baseDEb/100)*(1-sizeInfo.sizeDisc/100);
+    const adjDRev=Math.round((1-disc)*100);
+    const adjDEb=Math.round((1-discEb)*100);
     return{rS,eS,adjDRev,adjDEb,revLow:rS.p25*disc,revMid:rS.median*disc,revHigh:rS.p75*disc,ebLow:eS.p25*discEb,ebMid:eS.median*discEb,ebHigh:eS.p75*discEb};
-  },[comps,dRev,dEb,negEbitda]);
+  },[comps,dRev,dEb,negEbitda,sizeInfo]);
 
   useEffect(()=>{onUpdate({trRevLow:calc.revLow,trRevMid:calc.revMid,trRevHigh:calc.revHigh,trEbLow:calc.ebLow,trEbMid:calc.ebMid,trEbHigh:calc.ebHigh})},[calc]);
 
@@ -1783,6 +1809,7 @@ function TradingComps({gate,cfg,onUpdate,aiComps}){
       {open&&<div className="mod-body">
         <div style={{fontSize:12,color:"var(--gg)",marginBottom:12}}>Public comparables for <strong>{gate?gate.sector:""}</strong>. Figures in $M.</div>
         {negEbitda&&<div style={{background:"rgba(240,48,84,0.07)",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"var(--sp)",fontWeight:600}}>Negative EBITDA: +20% surcharge applied</div>}
+        {sizeInfo.flag&&<div style={{background:"#FEF3C7",border:"1px solid #FCD34D",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"#92400E",fontWeight:600}}>Size caution: the median comparable is roughly {sizeInfo.ratio>=1000?Math.round(sizeInfo.ratio/1000)+",000":Math.round(sizeInfo.ratio)+"x"} larger than this company by revenue. Public multiples do not translate directly to a business this size. An additional {sizeInfo.sizeDisc}% size discount has been applied on top of the illiquidity discount. Treat these multiples as directional only.</div>}
         <div className="scroll-table">
         <table className="dt"><thead><tr><th>Company</th><th>Ticker</th><th>EV ($M)</th><th>Rev ($M)</th><th>EBITDA ($M)</th><th>EV/Rev</th><th>EV/EBITDA</th><th></th></tr></thead>
         <tbody>{comps.map((c,i)=>{
@@ -2231,7 +2258,7 @@ function StrategicAnalysis({gate,cfg}){
           method:"POST",
           headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
-            model:"claude-sonnet-4-20250514",
+            model:"claude-sonnet-4-6",
             max_tokens:2000,
             messages:[{role:"user",content:userPrompt}],
             system:systemPrompt
@@ -2400,7 +2427,7 @@ function FundraiseReadiness({gate,cfg}){
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
         });
         const data=await resp.json();
         const textBlock=(data.content||[]).find(b=>b.type==="text");
@@ -2577,7 +2604,7 @@ function DynamicCompsLoader({gate,onCompsReady,onStatusChange}){
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:userPrompt}],system:systemPrompt})
         });
         const data=await resp.json();
         const textBlock=(data.content||[]).find(b=>b.type==="text");
@@ -2855,7 +2882,7 @@ function App(){
         const usr="Give exactly 2 strengths, 1 risk/challenge, and 1 strategic insight for this company, specific to its sector and business model. JSON only, no markdown:\n\nCompany: "+co+"\nSector: "+sector+(desc?"\nDescription: "+desc:"")+"\nGeography: "+(gate.geo||"")+"\n\nTitles 8 to 14 words, bold and declarative. Bodies 30 to 45 words. Never use em dashes or ** markdown.\n\nRespond with ONLY valid JSON:\n{\"strengths\":[{\"title\":\"...\",\"body\":\"...\"}],\"risks\":[{\"title\":\"...\",\"body\":\"...\"}],\"insights\":[{\"title\":\"...\",\"body\":\"...\"}]}";
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:900,messages:[{role:"user",content:usr}],system:sys})
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:900,messages:[{role:"user",content:usr}],system:sys})
         });
         const data=await resp.json();
         const tb=(data.content||[]).find(b=>b.type==="text");
