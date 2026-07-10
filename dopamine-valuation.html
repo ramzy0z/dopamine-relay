@@ -1303,72 +1303,12 @@ function Gate({onSubmit,apiKey,setApiKey}){
     setEnrichFailed(false);
     let companyDetected="";
     let websiteText="";
-
-    const extractWebsiteText=(html)=>{
-      const title=(html.match(/<title>([^<]{3,200})<\/title>/i)||[])[1]||"";
-      const metaDesc=(html.match(/<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["']([^"']{10,500})["']/i)||html.match(/<meta\s+content=["']([^"']{10,500})["']\s+(?:name|property)=["'](?:description|og:description)["']/i)||[])[1]||"";
-      const h1s=(html.match(/<h1[^>]*>([^<]{3,200})<\/h1>/gi)||[]).map(h=>h.replace(/<[^>]+>/g,"")).join(". ");
-      const h2s=(html.match(/<h2[^>]*>([^<]{3,150})<\/h2>/gi)||[]).slice(0,8).map(h=>h.replace(/<[^>]+>/g,"")).join(". ");
-      const ps=(html.match(/<p[^>]*>([^<]{20,500})<\/p>/gi)||[]).slice(0,10).map(p=>p.replace(/<[^>]+>/g,"")).join(" ");
-      return [title,metaDesc,h1s,h2s,ps].filter(Boolean).join(" | ").substring(0,2000);
-    };
-
-    try{
-      const ctrl=new AbortController();
-      const timer=setTimeout(()=>ctrl.abort(),5000);
-      const r=await fetch("https://autocomplete.clearbit.com/v1/companies/suggest?query="+encodeURIComponent(clean),{signal:ctrl.signal});
-      clearTimeout(timer);
-      const d=await r.json();
-      if(d&&d.length>0) companyDetected=d[0].name||"";
-    }catch(e){}
-
-    const proxies=[
-      url=>"https://api.allorigins.win/get?url="+encodeURIComponent(url),
-      url=>"https://corsproxy.io/?"+encodeURIComponent(url),
-      url=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(url),
-    ];
-    const targetUrl="https://"+clean;
-    for(const makeProxy of proxies){
-      if(websiteText)break;
-      try{
-        const ctrl=new AbortController();
-        const timer=setTimeout(()=>ctrl.abort(),8000);
-        const r=await fetch(makeProxy(targetUrl),{signal:ctrl.signal});
-        clearTimeout(timer);
-        if(!r.ok)continue;
-        const raw=await r.text();
-        const html=raw.startsWith("{")?(()=>{try{return JSON.parse(raw).contents||raw;}catch(e){return raw;}})():raw;
-        websiteText=extractWebsiteText(html);
-      }catch(e){}
-    }
-
     let wikiText="";
-    const wikiQuery=companyDetected||clean.replace(/\.[a-z]{2,6}$/i,"").replace(/[-_.]/g," ");
-    // Use Wikipedia search API first to find the correct page title, avoids 404 console errors
-    try{
-      const ctrl=new AbortController();
-      const timer=setTimeout(()=>ctrl.abort(),5000);
-      const searchUrl="https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch="+encodeURIComponent(wikiQuery+" company")+"&srlimit=3&format=json&origin=*";
-      const sr=await fetch(searchUrl,{signal:ctrl.signal});
-      clearTimeout(timer);
-      if(sr.ok){
-        const sd=await sr.json();
-        const results=(sd.query&&sd.query.search)||[];
-        for(const item of results){
-          if(wikiText)break;
-          try{
-            const ctrl2=new AbortController();
-            const timer2=setTimeout(()=>ctrl2.abort(),5000);
-            const r=await fetch("https://en.wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(item.title),{signal:ctrl2.signal,headers:{Accept:"application/json"}});
-            clearTimeout(timer2);
-            if(!r.ok)continue;
-            const d=await r.json();
-            const extract=(d.extract||"").trim();
-            if(extract.length>40) wikiText=extract.substring(0,800);
-          }catch(e){}
-        }
-      }
-    }catch(e){}
+    // Client-side scraping (Clearbit, CORS proxies, Wikipedia) removed.
+    // It was unreliable (403s, CORS blocks), slow, and Wikipedia lookups on the
+    // company name actively misled the model. Company research is now done by
+    // Claude via the web_search tool in the enrichment call below, which reads
+    // the real website and current sources directly.
 
     const coName=companyDetected||clean.replace(/\.[a-z]{2,6}$/i,"").replace(/[-_.]/g," ");
     const sectorList=ALL_SECTORS.join(", ");
@@ -2021,14 +1961,42 @@ function ValuationSummary({gate,cfg,vd,unlocked=true}){
     return{low:s[0],mid:s[1],high:s[2]};
   },[methods]);
 
+  // FREEZE: the AI-powered comps propagate into `vd` slightly after the results
+  // reveal, which used to make the blended range shift between the summary and the
+  // full report. We commit the blended value ONCE, after the method set has
+  // stabilised (all expected methods in, or a 30s safety cap), and display the
+  // frozen value everywhere so the two views can never disagree.
+  const [frozen,setFrozen]=useState(null);
+  const settleTimer=useRef(null);
+  const capTimer=useRef(null);
+  useEffect(()=>{
+    if(frozen)return;
+    if(!methods.length)return;
+    // Debounce: wait 1.5s after the last change to `methods` before committing,
+    // so late-arriving AI comps are included rather than freezing on a partial set.
+    if(settleTimer.current)clearTimeout(settleTimer.current);
+    settleTimer.current=setTimeout(()=>{
+      setFrozen(blended);
+    },1500);
+    // Safety cap: never wait more than 30s total; commit whatever is present.
+    if(!capTimer.current){
+      capTimer.current=setTimeout(()=>{
+        setFrozen(f=>f||blended);
+      },30000);
+    }
+    return()=>{if(settleTimer.current)clearTimeout(settleTimer.current);};
+  },[methods,blended,frozen]);
+
+  const shown=frozen||blended;
+
   return(
     <div className="val-hero">
       <div className="val-hero-label">Implied Enterprise Value</div>
       <div className="val-hero-amount">
-        {methods.length===0?"Computing...":(fmtResult(blended.low,cur)+" \u2013 "+fmtResult(blended.high,cur))}
+        {methods.length===0?"Computing...":(fmtResult(shown.low,cur)+" \u2013 "+fmtResult(shown.high,cur))}
       </div>
       <div className="val-hero-range">
-        {methods.length>0&&("Mid-point: "+fmtResult(blended.mid,cur))}
+        {methods.length>0&&("Mid-point: "+fmtResult(shown.mid,cur))}
       </div>
       <div className="val-hero-sub">Blended across {methods.length} method{methods.length!==1?"s":""} | {gate?gate.sector:""} | {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</div>
       {!hasEbitda&&methods.length>0&&<div style={{fontSize:11,opacity:0.6,marginTop:6,lineHeight:1.4}}>Note: Pre-profit company. Valuation weighted toward revenue-based methods. EBITDA multiples excluded.</div>}
@@ -2046,9 +2014,9 @@ function ValuationSummary({gate,cfg,vd,unlocked=true}){
           <tbody>
             <tr className="blended-row">
               <td>Blended (Equal Weight)</td>
-              <td>{fmtResult(blended.low,cur)}</td>
-              <td className="mid-col">{fmtResult(blended.mid,cur)}</td>
-              <td>{fmtResult(blended.high,cur)}</td>
+              <td>{fmtResult(shown.low,cur)}</td>
+              <td className="mid-col">{fmtResult(shown.mid,cur)}</td>
+              <td>{fmtResult(shown.high,cur)}</td>
               <td style={{fontSize:10,opacity:0.7}}>Average of all methods</td>
             </tr>
             {methods.map((m,i)=>(
@@ -2914,11 +2882,15 @@ function App(){
     return()=>{cancelled=true;};
   },[gated,gate]);
 
-  // Push to Attio once results are ready — blended valuation is fully computed by then
+  // Push to Attio once results are ready. We delay ~2s so the AI-powered comps
+  // have propagated into `vd`, so the valuation written to the CRM matches the
+  // frozen value the user sees in the summary and report (avoids the same
+  // race that caused the range to shift between views).
   const attioPushedRef=useRef(false);
   useEffect(()=>{
     if(!resultsReady||!gate||attioPushedRef.current)return;
     attioPushedRef.current=true;
+    const doPush=()=>{
     const rev=cfg.revenue||0;const ebitda=cfg.ebitda||0;const hasEb=ebitda>0;
     const clamp=r=>{const s=[r.low,r.mid,r.high].sort((a,b)=>a-b);return{low:s[0],mid:s[1],high:s[2]};};
     const rows=[];
@@ -2935,6 +2907,9 @@ function App(){
       blendedData={low:s[0],mid:s[1],high:s[2]};
     }
     pushLeadToAttio(gate,cfg,blendedData);
+    };
+    const t=setTimeout(doPush,2000);
+    return()=>clearTimeout(t);
   },[resultsReady,gate,cfg,vd]);
 
   // Failsafe: never let a hung teaser fetch block the results reveal.
