@@ -1316,7 +1316,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
     let claudeSector="";
     try{
       const systemPrompt="You are a senior investment analyst at an M&A advisory firm. You produce institutional-quality company descriptions. You never use em dashes. You write in a professional, precise tone suitable for investor presentations. You have access to web search: always search for the company's actual website and recent information before writing anything. Never infer what a company does from its name alone, since company names are often generic words, dictionary terms, or unrelated to the actual business.";
-      const userPrompt="Research this company using web search, then provide TWO things in JSON format only (no markdown, no backticks, no preamble):\n\nCompany name: "+coName+"\nDomain: "+clean+"\n\nFIRST, use web search to find and read the company's actual website ("+clean+") and any recent, reliable information about what this specific business does. Base your answer strictly on what you find about the real operating company at this domain. Do NOT guess from the company name, and do NOT rely on the dictionary or linguistic meaning of the name.\n\nThen provide:\n1. \"description\": A 25 to 40 word professional company description, third person, suitable for an investor deck. Focus on what the company actually does, its value proposition, target market, and business model. No marketing language, no CTAs, no em dashes. Stay within 25 to 40 words.\n\n2. \"sector\": Select the SINGLE most accurate sector from this list: ["+sectorList+"]. Return ONLY one sector name exactly as written in the list.\n\nIf, after searching, you cannot find reliable information about what the real business at this domain does, set description to an empty string and sector to an empty string rather than guessing.\n\nRespond with ONLY valid JSON: {\"description\":\"...\",\"sector\":\"...\"}";
+      const userPrompt="Research this company using web search, then provide TWO things in JSON format only (no markdown, no backticks, no preamble):\n\nCompany name: "+coName+"\nDomain: "+clean+"\n\nFIRST, use web search to find and read the company's actual website ("+clean+") and any recent, reliable information about what this specific business does. Base your answer strictly on what you find about the real operating company at this domain. Do NOT guess from the company name, and do NOT rely on the dictionary or linguistic meaning of the name.\n\nThen provide:\n1. \"description\": A 25 to 40 word professional company description, third person, suitable for an investor deck. Focus on what the company actually does, its value proposition, target market, and business model. No marketing language, no CTAs, no em dashes. Stay within 25 to 40 words.\n\n2. \"sector\": Select the SINGLE most accurate sector from this list: ["+sectorList+"]. Choose based on the company's REAL business model and how it makes money, not on keywords in its name or marketing. A physical, location-based service business (gym, clinic, salon, restaurant, wellness club) belongs in a consumer, leisure, or hospitality sector, NOT in technology or software, even if it describes itself with words like 'wellness', 'smart', or 'digital'. Return ONLY one sector name exactly as written in the list.\n\nIf, after searching, you cannot find reliable information about what the real business at this domain does, set description to an empty string and sector to an empty string rather than guessing.\n\nRespond with ONLY valid JSON: {\"description\":\"...\",\"sector\":\"...\"}";
 
       const ectrl=new AbortController();
       const etimer=setTimeout(()=>ectrl.abort(),40000);
@@ -2588,8 +2588,8 @@ function DynamicCompsLoader({gate,onCompsReady,onStatusChange}){
         const sector=gate.sector||"";
         const websiteText=gate.websiteText||"";
 
-        const systemPrompt="You are a senior equity research analyst. You select the most relevant public company comparables for valuation analysis. Be precise with financial data. Never use em dashes. You have access to web search: use it to verify what the target company does and to find accurate, current enterprise value, revenue, and EBITDA figures for the comparables you choose. Do not rely on memory for financial figures.";
-        const userPrompt="Research this company and select the 8 most relevant public company comparables an investment banker would use in a trading comps analysis:\n\nCompany: "+co+"\nSector: "+sector+"\nDescription: "+desc+"\n"+(websiteText?"Website: "+websiteText.substring(0,800)+"\n":"")+"\nUse web search first to confirm what the target actually does, then choose comparables that genuinely match its business model, and look up approximate current EV ($M), annual revenue ($M), and EBITDA ($M) for each. Prefer comparables of a broadly relevant scale where possible.\n\nInclude a mix of:\n- Direct competitors or peers\n- Companies with similar business models in adjacent sectors\n- Regional comparables if relevant (especially MENA-listed companies if the target is in the Middle East)\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{\"comps\":[{\"co\":\"Company Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}]}";
+        const systemPrompt="You are a senior M&A analyst selecting public company comparables for a valuation. You have web search. Be precise with financial figures and look them up, never rely on memory for numbers. Never use em dashes.\n\nCRITICAL PRINCIPLE: Comparables must match the target's actual BUSINESS MODEL and how it makes money, not a keyword in its name or sector label. A word like 'health', 'wellness', 'tech', 'digital', or 'smart' in a company's description must NOT lead you to software or digital-health comparables unless the company genuinely is one. A physical, single-location, service-based business (a gym, clinic, salon, restaurant, club) is NOT comparable to a scalable software or telemedicine platform, even if both are labelled 'health' or 'wellness'. Classify the real operating model first, then find listed businesses that share that model.";
+        const userPrompt="Research this company with web search, then select the 8 best public company comparables for a trading comps valuation.\n\nCompany: "+co+"\nStated sector: "+sector+"\nDescription: "+desc+"\nDomain: "+(gate.domain||"")+"\n"+(websiteText?"Website: "+websiteText.substring(0,800)+"\n":"")+"\nSTEP 1: Search the web to determine what this business ACTUALLY does. Identify: (a) is it a physical/location-based business or a scalable digital/software business, (b) how it generates revenue, (c) its approximate size, (d) its region. Do not assume from the name or sector label.\n\nSTEP 2: Select 8 listed companies whose BUSINESS MODEL most closely matches the target's real operating model. Prioritise same operating model over same headline sector. For example, a boutique fitness or wellness venue should be compared to listed gym, fitness, leisure, and hospitality operators (such as Basic-Fit, Life Time, Xponential Fitness, Town Sports, Planet Fitness, or regional leisure and hospitality names), NOT to telemedicine or health-software companies. Include MENA-listed comparables where relevant.\n\nSTEP 3: Look up approximate current EV ($M), revenue ($M), and EBITDA ($M) for each. If the target is far smaller than the listed comps (common for SMEs), still pick the closest operating-model matches; the tool applies a size discount separately.\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{\"comps\":[{\"co\":\"Company Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}]}";
 
         const ctrl=new AbortController();
         const timer=setTimeout(()=>ctrl.abort(),90000);
@@ -2645,17 +2645,16 @@ function ResultsLoadingScreen({gate,compsStatus}){
 
   const steps=[
     {label:"Analyzing financial inputs",threshold:0},
-    {label:"Computing DCF projections",threshold:3},
-    {label:"Matching transaction comparables",threshold:8},
-    {label:"Benchmarking sector multiples",threshold:14},
-    {label:"Calibrating preliminary valuation",threshold:22}
+    {label:"Computing DCF projections",threshold:2},
+    {label:"Matching transaction comparables",threshold:4},
+    {label:"Benchmarking sector multiples",threshold:6},
+    {label:"Calibrating preliminary valuation",threshold:8}
   ];
 
   const getStepState=(step,i)=>{
-    // Purely time-based. The reveal is capped at 40s and the accurate AI comps
-    // run in the background after reveal, so the loading checklist just reflects
-    // the preliminary computation progress.
-    if(elapsed>=step.threshold+3)return "done";
+    // Purely time-based, tuned so all five steps complete by ~9s, just before the
+    // reveal minimum. The accurate AI comps run in the background after reveal.
+    if(elapsed>=step.threshold+1.5)return "done";
     if(elapsed>=step.threshold)return "active";
     return "pending";
   };
@@ -2964,8 +2963,9 @@ function App(){
     const teaserFinished=teaserStatus==="done";
     const elapsed=Date.now()-(gateTimeRef.current||Date.now());
     if(teaserFinished){
-      // Small minimum so the loading animation doesn't flash by too fast.
-      const minDelay=Math.max(8000-elapsed,800);
+      // Minimum 9.5s so all five loading steps (which finish by ~9s) complete
+      // before reveal. Prevents the screen switching with boxes still unchecked.
+      const minDelay=Math.max(9500-elapsed,800);
       const timer=setTimeout(()=>setResultsReady(true),minDelay);
       return()=>clearTimeout(timer);
     }
