@@ -1318,6 +1318,8 @@ function Gate({onSubmit,apiKey,setApiKey}){
       const systemPrompt="You are a senior investment analyst at an M&A advisory firm. You produce institutional-quality company descriptions. You never use em dashes. You write in a professional, precise tone suitable for investor presentations. You have access to web search: always search for the company's actual website and recent information before writing anything. Never infer what a company does from its name alone, since company names are often generic words, dictionary terms, or unrelated to the actual business.";
       const userPrompt="Research this company using web search, then provide TWO things in JSON format only (no markdown, no backticks, no preamble):\n\nCompany name: "+coName+"\nDomain: "+clean+"\n\nFIRST, use web search to find and read the company's actual website ("+clean+") and any recent, reliable information about what this specific business does. Base your answer strictly on what you find about the real operating company at this domain. Do NOT guess from the company name, and do NOT rely on the dictionary or linguistic meaning of the name.\n\nThen provide:\n1. \"description\": A 25 to 40 word professional company description, third person, suitable for an investor deck. Focus on what the company actually does, its value proposition, target market, and business model. No marketing language, no CTAs, no em dashes. Stay within 25 to 40 words.\n\n2. \"sector\": Select the SINGLE most accurate sector from this list: ["+sectorList+"]. Return ONLY one sector name exactly as written in the list.\n\nIf, after searching, you cannot find reliable information about what the real business at this domain does, set description to an empty string and sector to an empty string rather than guessing.\n\nRespond with ONLY valid JSON: {\"description\":\"...\",\"sector\":\"...\"}";
 
+      const ectrl=new AbortController();
+      const etimer=setTimeout(()=>ectrl.abort(),40000);
       const resp=await fetch(RELAY_BASE+"/claude",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -1326,9 +1328,11 @@ function Gate({onSubmit,apiKey,setApiKey}){
           max_tokens:3000,
           messages:[{role:"user",content:userPrompt}],
           system:systemPrompt,
-          tools:[{type:"web_search_20260209",name:"web_search",max_uses:4}]
-        })
+          tools:[{type:"web_search_20260209",name:"web_search",max_uses:3}]
+        }),
+        signal:ectrl.signal
       });
+      clearTimeout(etimer);
       const data=await resp.json();
       // With web search enabled the response contains multiple blocks (Claude's
       // search narration, tool results, then the final answer). The JSON we want
@@ -1961,43 +1965,51 @@ function ValuationSummary({gate,cfg,vd,unlocked=true}){
     return{low:s[0],mid:s[1],high:s[2]};
   },[methods]);
 
-  // FREEZE: the AI-powered comps propagate into `vd` slightly after the results
-  // reveal, which used to make the blended range shift between the summary and the
-  // full report. We commit the blended value ONCE, after the method set has
-  // stabilised (all expected methods in, or a 30s safety cap), and display the
-  // frozen value everywhere so the two views can never disagree.
-  const [frozen,setFrozen]=useState(null);
+  // TWO-PHASE VALUATION:
+  // Phase 1 (locked): show a PRELIMINARY blended value from whatever methods have
+  //   landed by the 40s reveal (DCF, transaction comps, industry research, and
+  //   static fallback comps). Frozen so it does not jitter while locked.
+  // Phase 2 (unlocked): the background AI comps have landed by now, so we
+  //   re-commit to the REFINED blended value for the full report.
+  // The preliminary number is labelled as an estimate so the change on unlock is
+  // expected, not surprising.
+  const [prelim,setPrelim]=useState(null);
+  const [refined,setRefined]=useState(null);
   const settleTimer=useRef(null);
-  const capTimer=useRef(null);
-  useEffect(()=>{
-    if(frozen)return;
-    if(!methods.length)return;
-    // Debounce: wait 1.5s after the last change to `methods` before committing,
-    // so late-arriving AI comps are included rather than freezing on a partial set.
-    if(settleTimer.current)clearTimeout(settleTimer.current);
-    settleTimer.current=setTimeout(()=>{
-      setFrozen(blended);
-    },1500);
-    // Safety cap: never wait more than 30s total; commit whatever is present.
-    if(!capTimer.current){
-      capTimer.current=setTimeout(()=>{
-        setFrozen(f=>f||blended);
-      },30000);
-    }
-    return()=>{if(settleTimer.current)clearTimeout(settleTimer.current);};
-  },[methods,blended,frozen]);
 
-  const shown=frozen||blended;
+  // Commit the preliminary value once, shortly after the first methods arrive.
+  useEffect(()=>{
+    if(prelim)return;
+    if(!methods.length)return;
+    if(settleTimer.current)clearTimeout(settleTimer.current);
+    settleTimer.current=setTimeout(()=>setPrelim(blended),1200);
+    return()=>{if(settleTimer.current)clearTimeout(settleTimer.current);};
+  },[methods,blended,prelim]);
+
+  // Once unlocked, re-commit to the refined value (AI comps now included).
+  // Debounced so late propagation of the AI comps is captured.
+  const refineTimer=useRef(null);
+  useEffect(()=>{
+    if(!unlocked)return;
+    if(!methods.length)return;
+    if(refineTimer.current)clearTimeout(refineTimer.current);
+    refineTimer.current=setTimeout(()=>setRefined(blended),1500);
+    return()=>{if(refineTimer.current)clearTimeout(refineTimer.current);};
+  },[unlocked,methods,blended]);
+
+  const shown=unlocked?(refined||prelim||blended):(prelim||blended);
+  const showPrelimLabel=!unlocked&&methods.length>0;
 
   return(
     <div className="val-hero">
-      <div className="val-hero-label">Implied Enterprise Value</div>
+      <div className="val-hero-label">{showPrelimLabel?"Preliminary Implied Value":"Implied Enterprise Value"}</div>
       <div className="val-hero-amount">
         {methods.length===0?"Computing...":(fmtResult(shown.low,cur)+" \u2013 "+fmtResult(shown.high,cur))}
       </div>
       <div className="val-hero-range">
         {methods.length>0&&("Mid-point: "+fmtResult(shown.mid,cur))}
       </div>
+      {showPrelimLabel&&<div style={{fontSize:12,marginTop:8,padding:"8px 12px",background:"rgba(198,225,238,0.35)",borderRadius:6,lineHeight:1.45,color:"var(--fg,#000523)"}}>This is a preliminary estimate. Unlock the full report for a refined valuation range based on live market comparables sourced for your company.</div>}
       <div className="val-hero-sub">Blended across {methods.length} method{methods.length!==1?"s":""} | {gate?gate.sector:""} | {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</div>
       {!hasEbitda&&methods.length>0&&<div style={{fontSize:11,opacity:0.6,marginTop:6,lineHeight:1.4}}>Note: Pre-profit company. Valuation weighted toward revenue-based methods. EBITDA multiples excluded.</div>}
       {methods.length>0&&<div style={unlocked?{}:{filter:"blur(2.5px)",pointerEvents:"none",userSelect:"none",opacity:0.7}}>
@@ -2579,11 +2591,15 @@ function DynamicCompsLoader({gate,onCompsReady,onStatusChange}){
         const systemPrompt="You are a senior equity research analyst. You select the most relevant public company comparables for valuation analysis. Be precise with financial data. Never use em dashes. You have access to web search: use it to verify what the target company does and to find accurate, current enterprise value, revenue, and EBITDA figures for the comparables you choose. Do not rely on memory for financial figures.";
         const userPrompt="Research this company and select the 8 most relevant public company comparables an investment banker would use in a trading comps analysis:\n\nCompany: "+co+"\nSector: "+sector+"\nDescription: "+desc+"\n"+(websiteText?"Website: "+websiteText.substring(0,800)+"\n":"")+"\nUse web search first to confirm what the target actually does, then choose comparables that genuinely match its business model, and look up approximate current EV ($M), annual revenue ($M), and EBITDA ($M) for each. Prefer comparables of a broadly relevant scale where possible.\n\nInclude a mix of:\n- Direct competitors or peers\n- Companies with similar business models in adjacent sectors\n- Regional comparables if relevant (especially MENA-listed companies if the target is in the Middle East)\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{\"comps\":[{\"co\":\"Company Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}]}";
 
+        const ctrl=new AbortController();
+        const timer=setTimeout(()=>ctrl.abort(),90000);
         const resp=await fetch(RELAY_BASE+"/claude",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:4000,messages:[{role:"user",content:userPrompt}],system:systemPrompt,tools:[{type:"web_search_20260209",name:"web_search",max_uses:6}]})
+          body:JSON.stringify({model:"claude-sonnet-5",max_tokens:4000,messages:[{role:"user",content:userPrompt}],system:systemPrompt,tools:[{type:"web_search_20260209",name:"web_search",max_uses:6}]}),
+          signal:ctrl.signal
         });
+        clearTimeout(timer);
         const data=await resp.json();
         const textBlocks=(data.content||[]).filter(b=>b.type==="text"&&b.text).map(b=>b.text);
         for(let i=textBlocks.length-1;i>=0;i--){
@@ -2629,19 +2645,18 @@ function ResultsLoadingScreen({gate,compsStatus}){
 
   const steps=[
     {label:"Analyzing financial inputs",threshold:0},
-    {label:"Computing DCF projections",threshold:2},
-    {label:"Matching transaction comparables",threshold:4},
-    {label:"Sourcing AI-powered trading comps",threshold:5},
-    {label:"Calibrating valuation ranges",threshold:7}
+    {label:"Computing DCF projections",threshold:3},
+    {label:"Matching transaction comparables",threshold:8},
+    {label:"Benchmarking sector multiples",threshold:14},
+    {label:"Calibrating preliminary valuation",threshold:22}
   ];
 
-  const compsLoaded=compsStatus==="done"||compsStatus==="fallback";
-  const allDone=compsLoaded&&elapsed>=9;
-
   const getStepState=(step,i)=>{
-    if(elapsed>=step.threshold+2)return "done";
-    if(i===4&&compsLoaded&&elapsed>=step.threshold)return allDone?"done":"active";
-    if(elapsed>=step.threshold)return elapsed>=step.threshold+2?"done":"active";
+    // Purely time-based. The reveal is capped at 40s and the accurate AI comps
+    // run in the background after reveal, so the loading checklist just reflects
+    // the preliminary computation progress.
+    if(elapsed>=step.threshold+3)return "done";
+    if(elapsed>=step.threshold)return "active";
     return "pending";
   };
 
@@ -2673,9 +2688,6 @@ function ResultsLoadingScreen({gate,compsStatus}){
     </div>
   );
 }
-
-
-// ===== LOCKED PREVIEW (pre-unlock layout) =====
 // Order: Strategic teaser (2 green bullets sharp + rest blurred) -> Valuation hero
 // (big number sharp, table blurred) -> remaining module titles sharp, bodies blurred.
 function LockedPreview({gate,cfg,vd,teaserData}){
@@ -2882,15 +2894,17 @@ function App(){
     return()=>{cancelled=true;};
   },[gated,gate]);
 
-  // Push to Attio once results are ready. We delay ~2s so the AI-powered comps
-  // have propagated into `vd`, so the valuation written to the CRM matches the
-  // frozen value the user sees in the summary and report (avoids the same
-  // race that caused the range to shift between views).
+  // Push to Attio with the MOST accurate valuation available. We wait for the
+  // background AI comps to land (done/fallback) so the CRM captures the refined
+  // number, not the preliminary one. A 50s failsafe ensures we always push even
+  // if comps hang.
   const attioPushedRef=useRef(false);
   useEffect(()=>{
     if(!resultsReady||!gate||attioPushedRef.current)return;
-    attioPushedRef.current=true;
+    const compsSettled=aiCompsStatus==="done"||aiCompsStatus==="fallback";
     const doPush=()=>{
+    if(attioPushedRef.current)return;
+    attioPushedRef.current=true;
     const rev=cfg.revenue||0;const ebitda=cfg.ebitda||0;const hasEb=ebitda>0;
     const clamp=r=>{const s=[r.low,r.mid,r.high].sort((a,b)=>a-b);return{low:s[0],mid:s[1],high:s[2]};};
     const rows=[];
@@ -2908,9 +2922,15 @@ function App(){
     }
     pushLeadToAttio(gate,cfg,blendedData);
     };
-    const t=setTimeout(doPush,2000);
-    return()=>clearTimeout(t);
-  },[resultsReady,gate,cfg,vd]);
+    if(compsSettled){
+      // Comps in; give vd a beat to propagate, then push the refined number.
+      const t=setTimeout(doPush,2000);
+      return()=>clearTimeout(t);
+    }
+    // Comps not settled yet: failsafe push at 50s so a lead is never lost.
+    const failsafe=setTimeout(doPush,50000);
+    return()=>clearTimeout(failsafe);
+  },[resultsReady,gate,cfg,vd,aiCompsStatus]);
 
   // Failsafe: never let a hung teaser fetch block the results reveal.
   useEffect(()=>{
@@ -2935,17 +2955,24 @@ function App(){
     if(gated&&!gateTimeRef.current)gateTimeRef.current=Date.now();
   },[gated]);
 
+  // Reveal the preliminary valuation as soon as the teaser is ready, and NEVER
+  // later than a 40s hard cap. The AI comps deliberately do NOT gate the reveal;
+  // they keep running in the background and refine the range once the user
+  // unlocks the full report. This keeps the initial wait short and honest.
   useEffect(()=>{
     if(!gated)return;
-    const compsFinished=aiCompsStatus==="done"||aiCompsStatus==="fallback";
     const teaserFinished=teaserStatus==="done";
-    if(!compsFinished||!teaserFinished)return;
-    // Ensure minimum 10s loading display so all animation steps tick to done before reveal
     const elapsed=Date.now()-(gateTimeRef.current||Date.now());
-    const minDelay=Math.max(10000-elapsed,1000);
-    const timer=setTimeout(()=>setResultsReady(true),minDelay);
-    return()=>clearTimeout(timer);
-  },[gated,aiCompsStatus,teaserStatus]);
+    if(teaserFinished){
+      // Small minimum so the loading animation doesn't flash by too fast.
+      const minDelay=Math.max(8000-elapsed,800);
+      const timer=setTimeout(()=>setResultsReady(true),minDelay);
+      return()=>clearTimeout(timer);
+    }
+    // Hard cap: reveal at 40s no matter what.
+    const cap=setTimeout(()=>setResultsReady(true),Math.max(40000-elapsed,0));
+    return()=>clearTimeout(cap);
+  },[gated,teaserStatus]);
 
   // Pre-compute initial valuation estimates so summary is stable before LinkedIn unlock
   useEffect(()=>{
