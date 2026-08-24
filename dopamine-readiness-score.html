@@ -155,6 +155,13 @@ body{font-family:'Inter',sans-serif;background:#fff;color:#000523;min-height:100
 .btn-gate{background:#000523;border:none;border-radius:4px;color:white;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;cursor:pointer;padding:15px 32px;transition:all .18s;width:100%;display:block;text-align:center;text-decoration:none}
 .btn-gate:hover{background:#C6E1EE;color:#000523;transform:translateY(-1px)}
 .gate-note{font-size:11px;color:#7F7F7F;margin-top:10px}
+/* CONSENT CHECKBOX */
+.consent-check{display:flex;gap:10px;align-items:flex-start;margin-top:18px;padding-top:16px;border-top:1px solid #E2E4EE}
+.consent-check input{width:16px;height:16px;margin-top:2px;flex-shrink:0;accent-color:#000523;cursor:pointer}
+.consent-check label{font-size:12.5px;color:#7F7F7F;font-weight:400;line-height:1.45;margin:0;cursor:pointer}
+.consent-check label a{color:#000523;text-decoration:underline;text-underline-offset:2px}
+.consent-err{display:none;font-size:12.5px;color:#DC2626;margin-top:8px;font-weight:500}
+.consent-err.show{display:block}
 
 /* blurred preview cards */
 .dim-card{background:#fff;border:1px solid #E2E4EE;border-radius:4px;padding:18px}
@@ -479,6 +486,11 @@ body{font-family:'Inter',sans-serif;background:#fff;color:#000523;min-height:100
         </select>
       </div>
     </div>
+    <div class="consent-check">
+      <input type="checkbox" id="cConsent" onchange="clearConsentErr()">
+      <label for="cConsent">I agree to Wusool's <a href="https://www.wusoolcapital.com/privacy-policy" target="_blank" rel="noopener">Privacy Policy</a> and consent to being contacted.</label>
+    </div>
+    <div class="consent-err" id="errConsent">Please accept the Privacy Policy to continue.</div>
   </div>
   <div class="nav-row">
     <button class="btn-back" onclick="goTo(5)">← Back</button>
@@ -591,6 +603,10 @@ function nextSection(from,to){
   errEl.style.display='none';goTo(to);
 }
 
+function clearConsentErr(){
+  if(document.getElementById('cConsent').checked)document.getElementById('errConsent').classList.remove('show');
+}
+
 async function submitForm(){
   const name=document.getElementById('cName').value.trim();
   const email=document.getElementById('cEmail').value.trim();
@@ -599,6 +615,8 @@ async function submitForm(){
   const domain=document.getElementById('cDomain').value.trim();
   const errEl=document.getElementById('err6');
   if(!name||!email||!biz||!sector||!domain){errEl.style.display='block';setTimeout(()=>errEl.style.display='none',4000);return;}
+  if(!document.getElementById('cConsent').checked){document.getElementById('errConsent').classList.add('show');return;}
+  document.getElementById('errConsent').classList.remove('show');
   document.getElementById('submitBtn').disabled=true;
   const loading=document.getElementById('loadingScreen');
   loading.classList.add('active');
