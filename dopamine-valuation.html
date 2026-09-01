@@ -1467,6 +1467,13 @@ function Gate({onSubmit,apiKey,setApiKey}){
   const lastDomainRef=useRef("");
   const inFlightRef=useRef(false);
   const debounceRef=useRef(null);
+  // Current literal contents of the domain field, used to confirm the value
+  // has settled before a debounced call fires.
+  const domainValueRef=useRef("");
+  // A domain entered while an older call is still running. Without this the
+  // in-flight guard silently drops the correct domain in favour of a partial
+  // one that happened to fire first.
+  const queuedDomainRef=useRef("");
 
   // Wake the relay as soon as the form is on screen, so the container is warm
   // by the time a domain is entered.
@@ -1507,16 +1514,23 @@ function Gate({onSubmit,apiKey,setApiKey}){
     const{name,value}=e.target;
     // Domain is the one field worth acting on before blur. Waiting for focus
     // loss serialises the lookup against the user: they finish the domain,
-    // tab away, then sit watching a spinner. Starting on a debounced pause
-    // instead means the call runs while they fill in name and email, so by
-    // the time they reach the description it is usually already populated.
-    // The same-domain guard, in-flight flag and cache keep this from
-    // multiplying calls.
+    // tab away, then sit watching a spinner.
+    //
+    // The hazard is partial input. Typing "lenddoo.com" passes through
+    // "lenddoo.co", which is a structurally valid domain, so a naive debounce
+    // fires on the wrong host and then blocks the correct one behind its own
+    // in-flight flag. Guarded two ways: a longer pause, and a check that the
+    // value has not changed since the timer was set.
     if(name==="domain"){
       warmRelay();
       if(debounceRef.current)clearTimeout(debounceRef.current);
       const v=value;
-      debounceRef.current=setTimeout(()=>{enrichFromDomain(v);},900);
+      debounceRef.current=setTimeout(()=>{
+        // Only fire if the field still holds exactly what it held when the
+        // timer started. Any further keystroke has already reset this timer.
+        if(domainValueRef.current===v)enrichFromDomain(v);
+      },1600);
+      domainValueRef.current=value;
     }
     setF(p=>{
       const next={...p,[name]:value};
@@ -1545,10 +1559,13 @@ function Gate({onSubmit,apiKey,setApiKey}){
       return;
     }
 
-    // Same domain as last time, and we already have an answer. Nothing to do.
-    if(clean===lastDomainRef.current&&enriched)return;
-    // A call is already running for this field. Do not stack a second.
-    if(inFlightRef.current)return;
+    // Same domain as last time, and we already have a usable answer. Nothing
+    // to do. Note this deliberately does not block after a FAILURE: a failed
+    // attempt clears lastDomainRef so the user can retry the same domain.
+    if(clean===lastDomainRef.current&&enriched&&!enrichFailed)return;
+    // A call is already running. Queue this domain rather than dropping it, so
+    // a correct value entered over a partial one still gets resolved.
+    if(inFlightRef.current){queuedDomainRef.current=clean;return;}
 
     // Warm cache hit. Free.
     if(AICache.enrich.has(clean)){
@@ -1595,46 +1612,63 @@ function Gate({onSubmit,apiKey,setApiKey}){
 
       // Model choice. This pass produces a provisional tag, not a final one:
       // the stage-2 analyst prompt explicitly treats the sector as "may be
-      // WRONG" and re-derives it from its own research. Paying Sonnet for a
-      // judgment that gets audited downstream buys latency, not accuracy.
-      // Output here is roughly 80 tokens, so the old 1800 ceiling was ~20x
-      // what the schema can produce.
-      const ctrl=new AbortController();
-      const killer=setTimeout(()=>ctrl.abort(),ENRICH_TIMEOUT_MS);
-      let resp;
-      try{
-        resp=await fetch(RELAY_BASE+"/claude",{
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          signal:ctrl.signal,
-          body:JSON.stringify({
-            model:"claude-haiku-4-5-20251001",
-            max_tokens:350,
-            messages:[{role:"user",content:userPrompt}],
-            system:systemPrompt,
-            tools:[{type:"web_search_20260209",name:"web_search",max_uses:1}]
-          })
-        });
-      }finally{
-        clearTimeout(killer);
-      }
-      const data=await resp.json();
-      // With web search enabled the response contains multiple blocks (Claude's
-      // search narration, tool results, then the final answer). The JSON we want
-      // is in a text block, usually the last one. Scan ALL text blocks for valid
-      // JSON rather than taking the first, which may be search commentary.
-      const textBlocks=(data.content||[]).filter(b=>b.type==="text"&&b.text).map(b=>b.text);
-      for(let i=textBlocks.length-1;i>=0;i--){
-        const cleanJson=textBlocks[i].replace(/```json|```/g,"").trim();
-        const m=cleanJson.match(/\{[\s\S]*\}/);
-        if(!m)continue;
+      // WRONG" and re-derives it from its own research. Haiku is tried first
+      // for latency, with Sonnet as a fallback on the failure path only, so a
+      // hard case still resolves and the happy path stays fast.
+      //
+      // On max_tokens: with web search enabled the model's search narration
+      // and tool blocks are part of the OUTPUT stream, not just the final JSON.
+      // A ceiling sized to the JSON alone truncates the response before the
+      // JSON is ever emitted, which surfaces to the user as "could not
+      // auto-detect" even though the search succeeded.
+      const runEnrich=async(model,tokens)=>{
+        const ctrl=new AbortController();
+        const killer=setTimeout(()=>ctrl.abort(),ENRICH_TIMEOUT_MS);
         try{
-          const parsed=JSON.parse(m[0]);
-          if(parsed.description&&parsed.description.length>20) claudeDesc=parsed.description;
-          if(parsed.sector&&ALL_SECTORS.includes(parsed.sector)) claudeSector=parsed.sector;
-          if(claudeDesc||claudeSector)break;
-        }catch(e){}
+          const r=await fetch(RELAY_BASE+"/claude",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            signal:ctrl.signal,
+            body:JSON.stringify({
+              model:model,
+              max_tokens:tokens,
+              messages:[{role:"user",content:userPrompt}],
+              system:systemPrompt,
+              tools:[{type:"web_search_20260209",name:"web_search",max_uses:1}]
+            })
+          });
+          return await r.json();
+        }finally{
+          clearTimeout(killer);
+        }
+      };
+
+      const parseEnrich=(data)=>{
+        const blocks=(data&&data.content||[]).filter(b=>b.type==="text"&&b.text).map(b=>b.text);
+        for(let i=blocks.length-1;i>=0;i--){
+          const m=blocks[i].replace(/```json|```/g,"").trim().match(/\{[\s\S]*\}/);
+          if(!m)continue;
+          try{
+            const p=JSON.parse(m[0]);
+            if(p.description&&p.description.length>20){
+              return{description:p.description,sector:ALL_SECTORS.includes(p.sector)?p.sector:""};
+            }
+          }catch(e){}
+        }
+        return null;
+      };
+
+      let out=null;
+      try{
+        out=parseEnrich(await runEnrich("claude-haiku-4-5-20251001",1500));
+      }catch(e){
+        console.warn(e&&e.name==="AbortError"?"Enrichment timed out on Haiku, trying Sonnet.":"Haiku enrichment failed, trying Sonnet:",e);
       }
+      if(!out){
+        console.info("[AI] Haiku returned no usable result, falling back to Sonnet.");
+        out=parseEnrich(await runEnrich("claude-sonnet-5",1800));
+      }
+      if(out){claudeDesc=out.description;claudeSector=out.sector;}
     }catch(e){
       console.warn(e&&e.name==="AbortError"?"Enrichment timed out after "+(ENRICH_TIMEOUT_MS/1000)+"s, falling back to manual entry.":"Claude API enrichment failed, falling back to local:",e);
     }
@@ -1645,12 +1679,15 @@ function Gate({onSubmit,apiKey,setApiKey}){
     const aiSucceeded=!!claudeDesc;
 
     // Cache successes only. A miss is often transient (relay cold start, search
-    // timeout), and caching it would lock the user out of a retry that would
-    // otherwise work.
-    lastDomainRef.current=clean;
+    // timeout, truncated response), and caching it would lock the user out of a
+    // retry that would otherwise work. For the same reason lastDomainRef is
+    // only pinned on success: a failure must leave the same domain retryable.
     if(aiSucceeded){
+      lastDomainRef.current=clean;
       AICache.enrich.set(clean,{description:claudeDesc,sector:claudeSector});
       AICache.save();
+    }else{
+      lastDomainRef.current="";
     }
 
     setF(p=>({
@@ -1668,6 +1705,15 @@ function Gate({onSubmit,apiKey,setApiKey}){
     },0);
     setEnriching(false);
     inFlightRef.current=false;
+
+    // Drain a domain that arrived while this call was running.
+    const queued=queuedDomainRef.current;
+    if(queued&&queued!==clean){
+      queuedDomainRef.current="";
+      enrichFromDomain(queued);
+    }else{
+      queuedDomainRef.current="";
+    }
   };
 
   const sub=e=>{
@@ -1710,7 +1756,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
             <label className="fl">
               Company Domain *
               {enriching&&<span className="enriching-badge"><span className="ai-loader-dots"><span>.</span><span>.</span><span>.</span></span> AI Analyzing</span>}
-              {(!enriching&&enriched)&&<span className="ok-badge">&#x2713; Auto-filled</span>}
+              {(!enriching&&enriched&&!enrichFailed)&&<span className="ok-badge">&#x2713; Auto-filled</span>}
             </label>
             <input className={"fi"+(enriched?" enriched":"")} name="domain" value={f.domain} onChange={ch}
               onBlur={e=>{if(debounceRef.current)clearTimeout(debounceRef.current);enrichFromDomain(e.target.value);}}
