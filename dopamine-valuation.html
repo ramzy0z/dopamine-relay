@@ -257,6 +257,9 @@ textarea.fi{resize:vertical;min-height:64px;transition:height 0.4s ease,border-c
 .results-loader-step.active .results-loader-step-icon{background:#000523;color:#fff;animation:pulseGlow 1.5s ease-in-out infinite}
 .results-loader-step.done .results-loader-step-icon{background:var(--ng);color:#fff}
 .results-loader-step-mini-spin{width:10px;height:10px;border-radius:50%;border:1.5px solid transparent;border-top-color:#fff;animation:spin 0.7s linear infinite}
+@keyframes indetSlide{0%{left:-38%}100%{left:100%}}
+.indet-track{position:relative;height:3px;background:rgba(198,225,238,0.18);border-radius:3px;overflow:hidden;margin:8px 0 2px}
+.indet-fill{position:absolute;top:0;height:100%;width:38%;background:linear-gradient(90deg,rgba(198,225,238,0),#C6E1EE,rgba(198,225,238,0));border-radius:3px;animation:indetSlide 1.5s ease-in-out infinite}
 @keyframes resultsReveal{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 .results-revealed{animation:resultsReveal 0.5s ease-out}
 
@@ -339,6 +342,9 @@ const {useState,useEffect,useMemo,useCallback,useRef}=React;
 
 // Global Claude API key (persisted in session via App state, passed as prop)
 const RELAY_BASE="https://dopamine-relay.onrender.com";
+// Stage-2 analyst pass gives up after this and the UI falls back to the
+// baseline valuation with an explicit "could not refine" state.
+const ANALYST_TIMEOUT_MS=180000;
 
 async function callClaude(apiKey, systemPrompt, userPrompt, maxTokens=1000){
   // apiKey param retained for signature compatibility but key now lives server-side
@@ -396,17 +402,27 @@ async function fetchAnalystOverride(gate,cfg,sectorList){
 
   const userPrompt="Analyse this company and return the correct valuation inputs.\n\nCompany: "+co+"\nDomain: "+(gate.domain||"")+"\nAuto-assigned sector tag (may be WRONG): "+sector+"\nDescription: "+desc+"\n"+(websiteText?"Website: "+websiteText.substring(0,900)+"\n":"")+"Geography: "+geo+"\nRevenue: $"+rev.toLocaleString()+"\nEBITDA: $"+ebitda.toLocaleString()+"\n\nSTEP 1 - Verify the business. Search the web to confirm what this company actually does day to day. Do not infer from the company name or from the auto-assigned tag.\n\nSTEP 2 - Judge the tag. The tool's fixed sector list is:\n"+sectorList.join(", ")+"\n\nDecide honestly whether any of these genuinely fits the business model. Set sector_fit to \"good\" if one is a real match, or \"poor\" if the closest option would mislead a valuation (for example tagging a physical, real-estate-heavy service business into a software category). If \"poor\", still name the closest available tag in closest_existing_sector, but describe the true sector in effective_sector.\n\nSTEP 3 - Public comparables. Select 6 to 8 listed companies a banker would genuinely put in a trading comps table for THIS business model, not for the auto-assigned tag. Verify each is currently listed and not taken private. Look up approximate current EV, revenue and EBITDA in $M. Include regional comparables (GCC, MENA-listed) where genuinely relevant. If fewer than 6 credible listed peers exist, return only the ones that are real rather than padding with weak fits.\n\nSTEP 4 - Illiquidity and size discounts. This target has $"+rev.toLocaleString()+" revenue while listed peers are typically far larger. Recommend the discount to apply to peer multiples, as whole-number percentages, reflecting private-company illiquidity plus the size gap.\n\nSTEP 5 - DCF assumptions appropriate to the REAL business model (a capital-light software business and a capex-heavy physical operator should not share assumptions).\n\nSTEP 6 - Dataset matching terms. The tool holds proprietary M&A and VC datasets tagged with vertical names drawn from the sector list above. Return the terms from that list that should be used to find genuinely comparable deals for this business. Do not invent multiples; just name the matching terms.\n\nSTEP 7 - Strategic read. Give exactly 3 strengths (pros), 3 risks (cons) and 2 forward-looking insights, each specific to the REAL business model you verified, not to the auto-assigned tag. Titles 8-15 words, bodies 40-60 words. No generic statements that could apply to any company.\n\nSTEP 8 - Readiness scorecard. Score revenue_scale, profitability and market_context from 0-100 with a 15-25 word note each, referencing only the actual figures given above. If a figure was not provided, score 50 and say what is missing. Do not invent growth or retention metrics. Also give overall_grade (A+ to D), overall_label (3-5 words) and a 40-60 word summary.\n\nNever use em dashes. Never wrap text in ** markdown.\n\nRespond with ONLY valid JSON, no markdown, no backticks:\n{\"sector_fit\":\"good|poor\",\"closest_existing_sector\":\"...\",\"effective_sector\":\"...\",\"rationale\":\"one or two sentences on what the business really is and why the tag does or does not fit\",\"comps\":[{\"co\":\"Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}],\"discounts\":{\"revenue_discount_pct\":50,\"ebitda_discount_pct\":50},\"dcf\":{\"revGrowth\":0,\"ebitMarginImpr\":0,\"daaPct\":0,\"capexPct\":0,\"nwcPct\":0,\"termGrowth\":0},\"transaction_search_terms\":[\"...\"],\"vc_search_terms\":[\"...\"],\"pros\":[{\"title\":\"...\",\"body\":\"...\"}],\"cons\":[{\"title\":\"...\",\"body\":\"...\"}],\"insights\":[{\"title\":\"...\",\"body\":\"...\"}],\"revenue_scale\":{\"score\":0,\"note\":\"...\"},\"profitability\":{\"score\":0,\"note\":\"...\"},\"market_context\":{\"score\":0,\"note\":\"...\"},\"overall_grade\":\"...\",\"overall_label\":\"...\",\"summary\":\"...\"}";
 
-  const resp=await fetch(RELAY_BASE+"/claude",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      model:"claude-sonnet-5",
-      max_tokens:4000,
-      messages:[{role:"user",content:userPrompt}],
-      system:systemPrompt,
-      tools:[{type:"web_search_20260209",name:"web_search",max_uses:3}]
-    })
-  });
+  // Hard ceiling. Without this a stalled relay leaves the UI stuck on
+  // "Preliminary" indefinitely with no terminal state for the user.
+  const ctrl=new AbortController();
+  const killer=setTimeout(()=>ctrl.abort(),ANALYST_TIMEOUT_MS);
+  let resp;
+  try{
+    resp=await fetch(RELAY_BASE+"/claude",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      signal:ctrl.signal,
+      body:JSON.stringify({
+        model:"claude-sonnet-5",
+        max_tokens:4000,
+        messages:[{role:"user",content:userPrompt}],
+        system:systemPrompt,
+        tools:[{type:"web_search_20260209",name:"web_search",max_uses:3}]
+      })
+    });
+  }finally{
+    clearTimeout(killer);
+  }
   const data=await resp.json();
   const textBlocks=(data.content||[]).filter(b=>b.type==="text"&&b.text).map(b=>b.text);
   for(let i=textBlocks.length-1;i>=0;i--){
@@ -1159,6 +1175,22 @@ const fmtM=v=>{if(v===null||v===undefined||isNaN(v)||v===0)return"-";return v.to
 const fmtP=v=>{if(v===null||v===undefined||isNaN(v))return"-";return v.toFixed(2)+"%"};
 const fmtN=v=>{if(v===null||v===undefined||isNaN(v))return"-";return Math.round(v).toLocaleString()};
 
+// Median EBITDA margin of the listed peer set, used to sanity-check the
+// adjusted margin the user entered. An SME running several times peer margin
+// almost always means the owner salary add-back has no replacement-manager
+// cost deducted from it.
+function getPeerMedianMargin(sector,aiComps){
+  let set=(aiComps&&aiComps.length)?aiComps:null;
+  if(!set){
+    const resolved=resolveSector(sector);
+    set=PUBLIC_COMPS[sector]||PUBLIC_COMPS[resolved]||
+        PUBLIC_COMPS[SECTOR_TO_COMPS_KEY[sector]]||PUBLIC_COMPS[SECTOR_TO_COMPS_KEY[resolved]]||[];
+  }
+  const m=set.filter(c=>c&&c.rev>0&&c.ebitda>0).map(c=>c.ebitda/c.rev*100).sort((a,b)=>a-b);
+  if(!m.length)return null;
+  return m[Math.floor(m.length/2)];
+}
+
 function getStats(arr){
   if(!arr.length)return{min:0,p25:0,avg:0,median:0,p75:0,max:0};
   const s=[...arr].sort((a,b)=>a-b);const n=s.length;
@@ -1598,7 +1630,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
 
 
 // ===== AUTO DCF MODULE =====
-function DCFModule({gate,cfg,onUpdate,analyst}){
+function DCFModule({gate,cfg,onUpdate,analyst,aiComps}){
   const cur=(gate&&gate.inputCurrency)||"USD";
   const [open,setOpen]=useState(false);
   const [wacc_inputs,setWaccInputs]=useState(null);
@@ -1606,6 +1638,9 @@ function DCFModule({gate,cfg,onUpdate,analyst}){
   const [pf,setPf]=useState([]);
   const [cash,setCash]=useState(0);
   const [debt,setDebt]=useState(0);
+  // Trading and transaction comps are haircut for illiquidity, the DCF was not,
+  // so the methods were not comparable and the DCF sat far above the others.
+  const [dlom,setDlom]=useState(30);
   const [initialized,setInitialized]=useState(false);
   const [damodSource,setDamodSource]=useState(null);
 
@@ -1647,7 +1682,11 @@ function DCFModule({gate,cfg,onUpdate,analyst}){
         const eased=t*t; // quadratic easing
         projMargin=baseMargin+(targetMargin-baseMargin)*eased;
       }else{
-        projMargin=baseMargin+(growth.ebitMarginImpr*(i+1));
+        // Margins mean-revert; they do not expand indefinitely. Cap the total
+        // uplift, and on an already-high base assume no expansion at all,
+        // otherwise a 57% margin compounds to an implausible 67% by year 5.
+        const uplift=baseMargin>=30?0:Math.min(growth.ebitMarginImpr*(i+1),5);
+        projMargin=Math.min(baseMargin+uplift,45);
       }
       const projEBITDA=projRev*(projMargin/100);
       const dep=projRev*(growth.daaPct/100);
@@ -1688,9 +1727,12 @@ function DCFModule({gate,cfg,onUpdate,analyst}){
     // Floor terminal value: if projected FCF never turns positive, TV should not be a large negative drag
     const tv=lastFCF<0?0:rawTV;
     const ev=Math.max(sumDFCF+tv,0);
-    const eqV=Math.max(ev+cash-(wacc_inputs.d||0),0);
-    return{rows,tv,ev,eqVal:eqV,sumDFCF,tvFloored:lastFCF<0};
-  },[pf,wacc,wacc_inputs,termGrowth,cash]);
+    const eqPre=Math.max(ev+cash-(wacc_inputs.d||0),0);
+    const eqV=eqPre*(1-(dlom||0)/100);
+    const tvShare=ev>0?tv/ev:0;
+    const impliedExit=(wacc-gR)>0?1/(wacc-gR):0;
+    return{rows,tv,ev,eqVal:eqV,eqPre,sumDFCF,tvShare,impliedExit,tvFloored:lastFCF<0};
+  },[pf,wacc,wacc_inputs,termGrowth,cash,dlom]);
 
   useEffect(()=>{onUpdate({dcfEV:dcfCalc.ev,dcfEquity:dcfCalc.eqVal})},[dcfCalc.ev,dcfCalc.eqVal]);
 
@@ -1740,15 +1782,42 @@ function DCFModule({gate,cfg,onUpdate,analyst}){
           <td className="calc">{r.df.toFixed(4)}</td><td className="calc">{fmt(r.dfcf,cur)}</td></tr>
         ))}</tbody></table>
         </div>
+        {dcfCalc.tvShare>0.75&&<div style={{background:"rgba(245,166,35,0.10)",border:"1px solid rgba(245,166,35,0.4)",padding:"9px 13px",borderRadius:8,marginBottom:12,fontSize:12,color:"#8a5a00",lineHeight:1.5}}>
+          <strong>Terminal value is {(dcfCalc.tvShare*100).toFixed(0)}% of enterprise value.</strong> Most of this answer rests on one assumption rather than on the forecast years. Treat the DCF as indicative and lean on the market-based methods.
+        </div>}
+        {(()=>{
+          const rev=cfg.revenue||0, eb=cfg.ebitda||0;
+          if(rev<=0||eb<=0)return null;
+          const own=gate.ownerSalary||0;
+          const m=eb/rev*100;
+          const peer=getPeerMedianMargin(gate.sector||"",aiComps);
+          if(peer===null||m<peer*1.8)return null;
+          // Salary that would bring the margin back to roughly peer level.
+          const implied=Math.max(eb-rev*(peer/100),0);
+          return(
+            <div style={{background:"rgba(245,166,35,0.10)",border:"1px solid rgba(245,166,35,0.4)",padding:"10px 14px",borderRadius:8,marginBottom:12,fontSize:12,color:"#8a5a00",lineHeight:1.55}}>
+              <strong>Adjusted EBITDA margin of {m.toFixed(0)}% is {(m/peer).toFixed(1)}x the listed peer median of {peer.toFixed(0)}%.</strong>{" "}
+              Operators at scale do not run these margins, so this usually means the full owner salary was added back without deducting the cost of hiring someone to do that job. A buyer will insist on that deduction.
+              {own>0&&<> You added back {fmt(own,cur)} of owner salary. Deducting a market-rate replacement would lower adjusted EBITDA and every valuation below it.</>}
+              {" "}Roughly {fmt(implied,cur)} of the current EBITDA sits above peer-level margin.
+            </div>
+          );
+        })()}
         <div className="sub-hdr">Bridge to Equity</div>
         <div className="cfg-grid">
           <div className="ib"><label>Cash on Hand ($)</label><NumInput className="fi input-blue" value={cash} onChange={v=>setCash(v)}/></div>
           <div className="ib"><label>Total Debt ($)</label><NumInput className="fi input-blue" value={debt} onChange={v=>{setDebt(v);chW("d",v)}}/></div>
+          <div className="ib"><label>Illiquidity Discount (%) <Tip text="A DCF values the business as if freely tradeable. Trading and transaction comps here are already discounted for private-company illiquidity, so without this the DCF sits well above the other methods and drags the blended range up."/></label><NumInput className="fi input-blue" value={dlom} onChange={v=>setDlom(v)}/></div>
         </div>
         <div style={{display:"flex",gap:12,marginTop:8}}>
           <div className="sum-card" style={{flex:1}}><div className="lbl">Terminal Value{dcfCalc.tvFloored?" (floored)":""}</div><div className="val">{fmt(dcfCalc.tv,cur)}</div></div>
           <div className="sum-card" style={{flex:1}}><div className="lbl">Enterprise Value</div><div className="val">{fmt(dcfCalc.ev,cur)}</div></div>
-          <div className="sum-card accent" style={{flex:1}}><div className="lbl">Equity Value</div><div className="val">{fmt(dcfCalc.eqVal,cur)}</div></div>
+          <div className="sum-card accent" style={{flex:1}}><div className="lbl">Equity Value (after {dlom}% discount)</div><div className="val">{fmt(dcfCalc.eqVal,cur)}</div></div>
+        </div>
+        <div style={{display:"flex",gap:12,marginTop:10,flexWrap:"wrap"}}>
+          <div className="stat-box" style={{flex:1,minWidth:150}}><div className="stat-lbl">Undiscounted Equity</div><div className="stat-val">{fmt(dcfCalc.eqPre,cur)}</div></div>
+          <div className="stat-box" style={{flex:1,minWidth:150}}><div className="stat-lbl">Terminal Value Share</div><div className="stat-val">{(dcfCalc.tvShare*100).toFixed(0)}%</div></div>
+          <div className="stat-box" style={{flex:1,minWidth:150}}><div className="stat-lbl">Implied Exit on FCF</div><div className="stat-val">{fmtM(dcfCalc.impliedExit)}</div></div>
         </div>
         {dcfCalc.tvFloored&&<div style={{fontSize:11,color:"var(--gg)",marginTop:8,lineHeight:1.5}}>Terminal value set to $0 because the projected Year 5 FCF remains negative. In practice, investors would value this company primarily on revenue multiples and market-based methods. Adjust the EBIT projections above to reflect your path to profitability.</div>}
       </div>}
@@ -1858,8 +1927,8 @@ function TradingComps({gate,cfg,onUpdate,aiComps,analyst,analystStatus}){
       </div>
       {open&&<div className="mod-body">
         <div style={{fontSize:12,color:"var(--gg)",marginBottom:12}}>Public comparables for <strong>{gate?gate.sector:""}</strong>. Figures in $M.</div>
-        {!aiComps&&analystStatus==="running"&&<div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"#1D4ED8"}}>Showing static sector-benchmark comps. The analyst pass is still researching listed peers for this specific business and will replace these shortly.</div>}
-        {!aiComps&&analystStatus==="base"&&<div style={{background:"#FEF3C7",border:"1px solid #FCD34D",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"#B45309"}}>The analyst pass did not return usable peers this run, so these are static sector-benchmark comps. Verify the sector fit before relying on this set, or edit the rows below.</div>}
+        {!aiComps&&analystStatus==="running"&&<div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"#1D4ED8"}}>Sector-benchmark peers shown while a tailored peer set is being researched.</div>}
+        {!aiComps&&analystStatus==="base"&&<div style={{background:"#F8F8F8",border:"1px solid #e8e8e8",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:11.5,color:"var(--gg)"}}>Sector-benchmark peer set. Review the fit for this specific business, or edit the rows below, before sharing externally.</div>}
         {negEbitda&&<div style={{background:"rgba(240,48,84,0.07)",padding:"8px 12px",borderRadius:6,marginBottom:10,fontSize:12,color:"var(--sp)",fontWeight:600}}>Negative EBITDA: +20% surcharge applied</div>}
 
         <div className="scroll-table">
@@ -2030,6 +2099,7 @@ function IndustryResearch({gate,cfg,onUpdate}){
 
 // ===== VALUATION SUMMARY (shown at TOP) =====
 function ValuationSummary({gate,cfg,vd,unlocked=true,analystStatus}){
+
   const cur=(gate&&gate.inputCurrency)||"USD";
   const rev=cfg.revenue||0;
   const ebitda=cfg.ebitda||0;
@@ -2072,8 +2142,8 @@ function ValuationSummary({gate,cfg,vd,unlocked=true,analystStatus}){
     <div className="val-hero">
       <div className="val-hero-label" style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
         <span>Implied Enterprise Value</span>
-        {analystStatus==="running"&&<span style={{background:"rgba(198,225,238,0.18)",border:"1px solid rgba(198,225,238,0.45)",borderRadius:20,padding:"2px 10px",fontSize:10,letterSpacing:"0.5px",color:"#C6E1EE",textTransform:"none",fontWeight:700}}>Preliminary</span>}
-        {analystStatus==="refined"&&<span style={{background:"rgba(22,218,128,0.15)",border:"1px solid rgba(22,218,128,0.5)",borderRadius:20,padding:"2px 10px",fontSize:10,letterSpacing:"0.5px",color:"var(--ng)",textTransform:"none",fontWeight:700}}>Refined</span>}
+        {analystStatus==="running"&&<span style={{display:"inline-flex",alignItems:"center",gap:6,background:"rgba(198,225,238,0.18)",border:"1px solid rgba(198,225,238,0.45)",borderRadius:20,padding:"2px 10px",fontSize:10,letterSpacing:"0.5px",color:"#C6E1EE",textTransform:"none",fontWeight:700}}>Preliminary</span>}
+        {(analystStatus==="refined"||analystStatus==="base")&&<span style={{background:"rgba(22,218,128,0.15)",border:"1px solid rgba(22,218,128,0.5)",borderRadius:20,padding:"2px 10px",fontSize:10,letterSpacing:"0.5px",color:"var(--ng)",textTransform:"none",fontWeight:700}}>Done</span>}
       </div>
       <div className="val-hero-amount">
         {methods.length===0?"Computing...":(fmtResult(shown.low,cur)+" \u2013 "+fmtResult(shown.high,cur))}
@@ -2081,8 +2151,10 @@ function ValuationSummary({gate,cfg,vd,unlocked=true,analystStatus}){
       <div className="val-hero-range">
         {methods.length>0&&("Mid-point: "+fmtResult(shown.mid,cur))}
       </div>
-      {analystStatus==="running"&&<div style={{fontSize:11.5,opacity:0.75,marginBottom:10,lineHeight:1.5,background:"rgba(198,225,238,0.10)",border:"1px solid rgba(198,225,238,0.25)",borderRadius:8,padding:"8px 12px"}}>This is a preliminary range built from sector benchmarks. A full analyst pass is running now: it re-checks what the business actually is and rebuilds the peer set, so this range will update once. You do not need to wait, and nothing is lost if you leave the page.</div>}
-      {analystStatus==="refined"&&<div style={{fontSize:11.5,opacity:0.75,marginBottom:10,lineHeight:1.5,background:"rgba(22,218,128,0.08)",border:"1px solid rgba(22,218,128,0.3)",borderRadius:8,padding:"8px 12px"}}>Refined using an analyst review of the actual business model, with a purpose-built peer set replacing the generic sector benchmark.</div>}
+      {analystStatus==="running"&&<div style={{marginBottom:12}}>
+        <div className="indet-track"><div className="indet-fill"></div></div>
+        <div style={{fontSize:11.5,opacity:0.6,marginTop:6}}>Finalising your valuation.</div>
+      </div>}
       <div className="val-hero-sub">Blended across {methods.length} method{methods.length!==1?"s":""} | {gate?gate.sector:""} | {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</div>
       {!hasEbitda&&methods.length>0&&<div style={{fontSize:11,opacity:0.6,marginTop:6,lineHeight:1.4}}>Note: Pre-profit company. Valuation weighted toward revenue-based methods. EBITDA multiples excluded.</div>}
       {methods.length>0&&<div style={unlocked?{}:{filter:"blur(2.5px)",pointerEvents:"none",userSelect:"none",opacity:0.7}}>
@@ -2155,7 +2227,7 @@ function LinkedInGateV2({gate,cfg,aiComps,onUpdate,vd,unlocked,analysisData,anal
     <div>
       <div data-scroll-stop><StrategicAnalysis gate={gate} cfg={cfg} analysis={analysisData}/></div>
       <div data-scroll-stop><FundraiseReadiness gate={gate} cfg={cfg} analysis={analysisData}/></div>
-      <div data-scroll-stop><DCFModule gate={gate} cfg={cfg} onUpdate={onUpdate} analyst={analyst}/></div>
+      <div data-scroll-stop><DCFModule gate={gate} cfg={cfg} onUpdate={onUpdate} analyst={analyst} aiComps={aiComps}/></div>
       <div data-scroll-stop><TradingComps gate={gate} cfg={cfg} onUpdate={onUpdate} aiComps={aiComps} analyst={analyst} analystStatus={analystStatus}/></div>
       <div data-scroll-stop><TransactionComps gate={gate} cfg={cfg} onUpdate={onUpdate}/></div>
       <div data-scroll-stop><IndustryResearch gate={gate} cfg={cfg} onUpdate={onUpdate}/></div>
@@ -2756,6 +2828,11 @@ function App(){
     if(!gated||!gate)return;
     let cancelled=false;
     setAnalystStatus("running");
+    // Watchdog: the fetch has its own abort, but this guarantees the UI reaches
+    // a terminal state even if the request settles in some unexpected way.
+    const watchdog=setTimeout(()=>{
+      if(!cancelled)setAnalystStatus(st=>st==="running"?"base":st);
+    },ANALYST_TIMEOUT_MS+5000);
     (async()=>{
       // Local strategic read first so the preview is never empty.
       try{
@@ -2767,7 +2844,7 @@ function App(){
       try{
         result=await fetchAnalystOverride(gate,cfg,ALL_SECTORS);
       }catch(e){
-        console.warn("Analyst pass failed, keeping baseline valuation:",e);
+        console.warn(e&&e.name==="AbortError"?"Analyst pass timed out, keeping baseline valuation.":"Analyst pass failed, keeping baseline valuation:",e);
       }
       if(cancelled)return;
 
@@ -2787,7 +2864,7 @@ function App(){
         setAnalystStatus("base");
       }
     })();
-    return()=>{cancelled=true;};
+    return()=>{cancelled=true;clearTimeout(watchdog);};
   },[gated,gate]);
 
   // Push to Attio once results are ready. We delay ~2s so the AI-powered comps
@@ -2871,7 +2948,11 @@ function App(){
         const eased=t*t;
         projMargin=baseMargin+(targetMargin-baseMargin)*eased;
       }else{
-        projMargin=baseMargin+(growth.ebitMarginImpr*(i+1));
+        // Margins mean-revert; they do not expand indefinitely. Cap the total
+        // uplift, and on an already-high base assume no expansion at all,
+        // otherwise a 57% margin compounds to an implausible 67% by year 5.
+        const uplift=baseMargin>=30?0:Math.min(growth.ebitMarginImpr*(i+1),5);
+        projMargin=Math.min(baseMargin+uplift,45);
       }
       const projEBITDA=projRev*(projMargin/100);
       const dep=projRev*(growth.daaPct/100);
