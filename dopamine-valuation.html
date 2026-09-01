@@ -346,6 +346,64 @@ const RELAY_BASE="https://dopamine-relay.onrender.com";
 // baseline valuation with an explicit "could not refine" state.
 const ANALYST_TIMEOUT_MS=180000;
 
+// ===== TOKEN BUDGET AND CACHING =====
+// Both Claude passes cost real money per call and both are reachable from an
+// unauthenticated public page. Three leaks are guarded here:
+//
+//   1. Repeat work. The same domain re-enriched, or the same company re-run
+//      through the analyst pass, returns a cached answer instead of paying twice.
+//   2. Blur churn. onBlur fires every time the domain field loses focus, so a
+//      user tabbing in and out of an unchanged field would otherwise fire a
+//      fresh web-search call on each pass.
+//   3. Scripted abuse. Moving the expensive pass behind form completion
+//      relocates the cost, it does not remove it. A per-session ceiling caps
+//      how much any one browser can spend before it has to reload.
+//
+// Session-scoped by design. This is a client guard for honest traffic and
+// accidental repeats; the relay still needs its own IP rate limit for anything
+// deliberately hostile.
+const ENRICH_BUDGET=12;   // light description+sector passes per session
+const ANALYST_BUDGET=6;   // full valuation passes per session
+
+const AICache={
+  enrich:new Map(),
+  analyst:new Map(),
+  enrichCalls:0,
+  analystCalls:0,
+  // Persist across reloads within the tab so a refresh does not reset the
+  // counter or discard warm results.
+  load(){
+    try{
+      const raw=sessionStorage.getItem("wusool_ai_cache");
+      if(!raw)return;
+      const p=JSON.parse(raw);
+      this.enrich=new Map(p.enrich||[]);
+      this.analyst=new Map(p.analyst||[]);
+      this.enrichCalls=p.enrichCalls||0;
+      this.analystCalls=p.analystCalls||0;
+    }catch(e){}
+  },
+  save(){
+    try{
+      sessionStorage.setItem("wusool_ai_cache",JSON.stringify({
+        enrich:[...this.enrich],
+        analyst:[...this.analyst],
+        enrichCalls:this.enrichCalls,
+        analystCalls:this.analystCalls
+      }));
+    }catch(e){}
+  }
+};
+AICache.load();
+
+// Analyst results depend on the financials, not just the domain, so the key
+// includes both. Revenue and EBITDA are bucketed to the nearest 1k so a trivial
+// edit does not invalidate an otherwise valid cached pass.
+function analystKey(domain,rev,ebitda){
+  const b=n=>Math.round((parseFloat(n)||0)/1000);
+  return normalizeDomain(domain)+"|"+b(rev)+"|"+b(ebitda);
+}
+
 async function callClaude(apiKey, systemPrompt, userPrompt, maxTokens=1000){
   // apiKey param retained for signature compatibility but key now lives server-side
   try{
@@ -398,6 +456,20 @@ async function fetchAnalystOverride(gate,cfg,sectorList){
   const rev=cfg.revenue||0;
   const ebitda=cfg.ebitda||0;
 
+  // Cache and budget. A resubmit with unchanged inputs, or a back-and-forward
+  // through the results view, must not pay for a second full pass.
+  const key=analystKey(gate.domain,rev,ebitda);
+  if(AICache.analyst.has(key)){
+    console.info("[AI] Analyst pass served from cache:",key);
+    return AICache.analyst.get(key);
+  }
+  if(AICache.analystCalls>=ANALYST_BUDGET){
+    console.warn("[AI] Analyst budget exhausted for this session. Returning null; baseline valuation stands.");
+    return null;
+  }
+  AICache.analystCalls++;
+  AICache.save();
+
   const systemPrompt="You are a senior M&A analyst at an investment bank, with full authority to overrule an automated sector tag. Automated classifiers routinely mislabel businesses: a physical nursery gets tagged as EdTech because its description mentions education; a childcare operator gets tagged as a baby-products company because both involve children. Your job is to determine what the business ACTUALLY is and to build the valuation inputs a banker would actually use. Be precise with financial data. Never use em dashes. Use web search to verify the business model and to source current figures rather than relying on memory.";
 
   const userPrompt="Analyse this company and return the correct valuation inputs.\n\nCompany: "+co+"\nDomain: "+(gate.domain||"")+"\nAuto-assigned sector tag (may be WRONG): "+sector+"\nDescription: "+desc+"\n"+(websiteText?"Website: "+websiteText.substring(0,900)+"\n":"")+"Geography: "+geo+"\nRevenue: $"+rev.toLocaleString()+"\nEBITDA: $"+ebitda.toLocaleString()+"\n\nSTEP 1 - Verify the business. Search the web to confirm what this company actually does day to day. Do not infer from the company name or from the auto-assigned tag.\n\nSTEP 2 - Judge the tag. The tool's fixed sector list is:\n"+sectorList.join(", ")+"\n\nDecide honestly whether any of these genuinely fits the business model. Set sector_fit to \"good\" if one is a real match, or \"poor\" if the closest option would mislead a valuation (for example tagging a physical, real-estate-heavy service business into a software category). If \"poor\", still name the closest available tag in closest_existing_sector, but describe the true sector in effective_sector.\n\nSTEP 3 - Public comparables. Select 6 to 8 listed companies a banker would genuinely put in a trading comps table for THIS business model, not for the auto-assigned tag. Verify each is currently listed and not taken private. Look up approximate current EV, revenue and EBITDA in $M. Include regional comparables (GCC, MENA-listed) where genuinely relevant. If fewer than 6 credible listed peers exist, return only the ones that are real rather than padding with weak fits.\n\nSTEP 4 - Illiquidity and size discounts. This target has $"+rev.toLocaleString()+" revenue while listed peers are typically far larger. Recommend the discount to apply to peer multiples, as whole-number percentages, reflecting private-company illiquidity plus the size gap.\n\nSTEP 5 - DCF assumptions appropriate to the REAL business model (a capital-light software business and a capex-heavy physical operator should not share assumptions).\n\nSTEP 6 - Dataset matching terms. The tool holds proprietary M&A and VC datasets tagged with vertical names drawn from the sector list above. Return the terms from that list that should be used to find genuinely comparable deals for this business. Do not invent multiples; just name the matching terms.\n\nSTEP 7 - Strategic read. Give exactly 3 strengths (pros), 3 risks (cons) and 2 forward-looking insights, each specific to the REAL business model you verified, not to the auto-assigned tag. Titles 8-15 words, bodies 40-60 words. No generic statements that could apply to any company.\n\nSTEP 8 - Readiness scorecard. Score revenue_scale, profitability and market_context from 0-100 with a 15-25 word note each, referencing only the actual figures given above. If a figure was not provided, score 50 and say what is missing. Do not invent growth or retention metrics. Also give overall_grade (A+ to D), overall_label (3-5 words) and a 40-60 word summary.\n\nNever use em dashes. Never wrap text in ** markdown.\n\nRespond with ONLY valid JSON, no markdown, no backticks:\n{\"sector_fit\":\"good|poor\",\"closest_existing_sector\":\"...\",\"effective_sector\":\"...\",\"rationale\":\"one or two sentences on what the business really is and why the tag does or does not fit\",\"comps\":[{\"co\":\"Name\",\"tk\":\"TICKER\",\"ev\":0,\"rev\":0,\"ebitda\":0}],\"discounts\":{\"revenue_discount_pct\":50,\"ebitda_discount_pct\":50},\"dcf\":{\"revGrowth\":0,\"ebitMarginImpr\":0,\"daaPct\":0,\"capexPct\":0,\"nwcPct\":0,\"termGrowth\":0},\"transaction_search_terms\":[\"...\"],\"vc_search_terms\":[\"...\"],\"pros\":[{\"title\":\"...\",\"body\":\"...\"}],\"cons\":[{\"title\":\"...\",\"body\":\"...\"}],\"insights\":[{\"title\":\"...\",\"body\":\"...\"}],\"revenue_scale\":{\"score\":0,\"note\":\"...\"},\"profitability\":{\"score\":0,\"note\":\"...\"},\"market_context\":{\"score\":0,\"note\":\"...\"},\"overall_grade\":\"...\",\"overall_label\":\"...\",\"summary\":\"...\"}";
@@ -430,7 +502,11 @@ async function fetchAnalystOverride(gate,cfg,sectorList){
     if(!m)continue;
     try{
       const parsed=JSON.parse(m[0]);
-      if(parsed.comps&&parsed.comps.length>=3)return parsed;
+      if(parsed.comps&&parsed.comps.length>=3){
+        AICache.analyst.set(key,parsed);
+        AICache.save();
+        return parsed;
+      }
     }catch(e){}
   }
   return null;
@@ -1361,7 +1437,13 @@ function Gate({onSubmit,apiKey,setApiKey}){
   const [descAutoFilled,setDescAutoFilled]=useState(false);
   const [sectorAutoFilled,setSectorAutoFilled]=useState(false);
   const [enrichFailed,setEnrichFailed]=useState(false);
+  const [enrichBlocked,setEnrichBlocked]=useState(false);
   const descRef=useRef(null);
+  // Last domain we actually enriched, and an in-flight flag. onBlur fires on
+  // every focus loss, so without these a user tabbing through the form would
+  // fire a fresh web-search call each time the field is left.
+  const lastDomainRef=useRef("");
+  const inFlightRef=useRef(false);
 
   // Auto-grow textarea whenever description changes
   useEffect(()=>{
@@ -1411,6 +1493,47 @@ function Gate({onSubmit,apiKey,setApiKey}){
     if(!domain)return;
     const clean=domain.replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0].trim().toLowerCase();
     if(!clean||clean.length<3)return;
+
+    // Shape check before spending anything. A parked string, a bare word with
+    // no TLD, or an obvious typo should fail here rather than after the user
+    // has filled in five more fields and hit submit.
+    if(!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(clean)){
+      setEnrichFailed(true);
+      setEnriched(true);
+      setDescAutoFilled(false);
+      setSectorAutoFilled(false);
+      return;
+    }
+
+    // Same domain as last time, and we already have an answer. Nothing to do.
+    if(clean===lastDomainRef.current&&enriched)return;
+    // A call is already running for this field. Do not stack a second.
+    if(inFlightRef.current)return;
+
+    // Warm cache hit. Free.
+    if(AICache.enrich.has(clean)){
+      const hit=AICache.enrich.get(clean);
+      lastDomainRef.current=clean;
+      setF(p=>({...p,description:hit.description||"",sector:hit.sector||"",websiteText:"",wikiText:""}));
+      setDescAutoFilled(!!hit.description);
+      setSectorAutoFilled(!!hit.description);
+      setEnrichFailed(!hit.description);
+      setEnriched(true);
+      return;
+    }
+
+    // Session ceiling. Caps what one browser can spend before a reload.
+    if(AICache.enrichCalls>=ENRICH_BUDGET){
+      console.warn("[AI] Enrichment budget exhausted for this session.");
+      setEnrichBlocked(true);
+      setEnrichFailed(true);
+      setEnriched(true);
+      return;
+    }
+
+    inFlightRef.current=true;
+    AICache.enrichCalls++;
+    AICache.save();
     setEnriching(true);
     setEnrichFailed(false);
     let companyDetected="";
@@ -1467,6 +1590,15 @@ function Gate({onSubmit,apiKey,setApiKey}){
     // If it failed, do NOT invent a generic description; flag it so the user fills it in.
     const aiSucceeded=!!claudeDesc;
 
+    // Cache successes only. A miss is often transient (relay cold start, search
+    // timeout), and caching it would lock the user out of a retry that would
+    // otherwise work.
+    lastDomainRef.current=clean;
+    if(aiSucceeded){
+      AICache.enrich.set(clean,{description:claudeDesc,sector:claudeSector});
+      AICache.save();
+    }
+
     setF(p=>({
       ...p,
       description:claudeDesc||"",
@@ -1481,6 +1613,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
       setEnriched(true);
     },0);
     setEnriching(false);
+    inFlightRef.current=false;
   };
 
   const sub=e=>{
@@ -1537,7 +1670,7 @@ function Gate({onSubmit,apiKey,setApiKey}){
               <Tip text="A concise description helps us select the most relevant comparable companies and benchmarks."/>
             </label>
             <textarea ref={descRef} className={"fi"+(descAutoFilled&&f.description?" enriched":"")} name="description" value={f.description} onChange={ch} placeholder="e.g. We build AI-powered supply chain software for mid-market manufacturers" style={{minHeight:64,overflow:"hidden",resize:"none"}}/>
-            {enrichFailed&&<div className="fh" style={{color:"#B45309",background:"#FEF3C7",border:"1px solid #FCD34D",borderRadius:8,padding:"8px 10px",marginTop:6}}>We could not auto-detect this company. Please write a short description and select the sector manually so we can match the right comparables.</div>}
+            {enrichFailed&&<div className="fh" style={{color:"#B45309",background:"#FEF3C7",border:"1px solid #FCD34D",borderRadius:8,padding:"8px 10px",marginTop:6}}>{enrichBlocked?"Auto-detection is unavailable right now. Please write a short description and select the sector manually so we can match the right comparables.":"We could not auto-detect this company. Please write a short description and select the sector manually so we can match the right comparables."}</div>}
           </div>
           <div className="row2" style={{gridTemplateColumns:"1fr 1fr"}}>
             <div className="fg" style={{minWidth:0}}>
